@@ -2,6 +2,8 @@
 
 This Python script automates the process of tracking prices for collectible trading cards on TCGplayer.com. It runs daily, scrapes data for multiple products, records the history in CSV files, and generates a single, combined PDF report with advanced visualizations and a summary of the day's market activity.
 
+The live project can be found on GitHub: [https://github.com/dmeehan-I/tcgplayerscraper](https://github.com/dmeehan-I/tcgplayerscraper)
+
 ## Features
 
 - **Multi-Product Tracking**: Easily track multiple products by adding their URLs to a list.
@@ -34,8 +36,8 @@ Follow these steps to get the project running.
 
 ### 2. Clone the Repository
 ```bash
-git clone <your-repository-url>
-cd <your-repository-directory>
+git clone [https://github.com/dmeehan-I/tcgplayerscraper.git](https://github.com/dmeehan-I/tcgplayerscraper.git)
+cd tcgplayerscraper
 ```
 
 ### 3. Install Required Libraries
