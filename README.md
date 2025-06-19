@@ -11,7 +11,7 @@ The live project can be found on GitHub: [https://github.com/dmeehan-I/tcgplayer
 - **Historical Data Logging**: Saves the daily scraped data into individual `.csv` files for each product, creating a historical price database.
 - **Combined PDF Reporting**: Generates a single, professional PDF report (`TCGplayer_Combo_Report.pdf`) with:
   - An **Executive Summary** page comparing all tracked products at a glance.
-  - **Color-Coded Price Changes** on the summary page (green for up, red for down).
+  - **Color-Coded Price & Quantity Changes** on the summary page (green for up, red for down).
   - **Detailed Individual Pages** for each product.
   - **Advanced Data Visualizations**, including a 7-day moving average, recent sale scatter plots, and a bar chart for the number of sellers.
 - **Task Scheduling**: Can be easily automated to run at a specific time every day using Windows Task Scheduler.
@@ -21,10 +21,10 @@ The live project can be found on GitHub: [https://github.com/dmeehan-I/tcgplayer
 The generated PDF report includes a summary page and detailed pages for each product.
 
 **Summary Page:**
-*<-- Replace with an actual screenshot of your summary page -->*
+*The summary page includes columns for Market Price, Price Change, Current Quantity, Quantity Change, and Listed Median, with color-coded cells for positive or negative changes.*
 
 **Detailed Product Page:**
-*<-- Replace with an actual screenshot of a detailed product page -->*
+*The detailed page for each item includes a chart showing Market Price history, a 7-day moving average, recent sale prices, and the number of sellers over time.*
 
 ## Setup & Installation
 
