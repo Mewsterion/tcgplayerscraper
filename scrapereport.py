@@ -130,7 +130,7 @@ def scrape_product_data(url, driver):
 
 def update_data(product_name, new_data):
     """
-    Updates the CSV file for a specific product.
+    Updates the CSV file for a specific product and calculates changes.
     """
     if not new_data or not product_name:
         return None
@@ -142,14 +142,28 @@ def update_data(product_name, new_data):
     
     if os.path.exists(csv_file):
         df_old = pd.read_csv(csv_file)
-        # Add a check for price change
         if len(df_old) > 0:
-            last_price = pd.to_numeric(df_old.iloc[-1]['Market Price'].replace('$', ''), errors='coerce')
-            new_price = pd.to_numeric(new_data['Market Price'].replace('$', ''), errors='coerce')
+            last_entry = df_old.iloc[-1]
+            # Calculate Price Change
+            last_price = pd.to_numeric(str(last_entry.get('Market Price', '0')).replace('$', ''), errors='coerce')
+            new_price = pd.to_numeric(str(new_data['Market Price']).replace('$', ''), errors='coerce')
             if pd.notna(last_price) and pd.notna(new_price):
                  new_data['Price Change'] = new_price - last_price
+            else:
+                 new_data['Price Change'] = 0
+            
+            # Calculate Quantity Change
+            last_qty = pd.to_numeric(str(last_entry.get('Current Quantity', '0')).replace(',', ''), errors='coerce')
+            new_qty = pd.to_numeric(str(new_data.get('Current Quantity', '0')).replace(',', ''), errors='coerce')
+            if pd.notna(last_qty) and pd.notna(new_qty):
+                new_data['Quantity Change'] = new_qty - last_qty
+            else:
+                new_data['Quantity Change'] = 0
+                
         df_combined = pd.concat([df_old, df_new], ignore_index=True)
     else:
+        new_data['Price Change'] = 0
+        new_data['Quantity Change'] = 0
         df_combined = df_new
 
     df_combined.to_csv(csv_file, index=False)
@@ -157,7 +171,7 @@ def update_data(product_name, new_data):
 
 def create_combo_pdf_report(all_products_data):
     """
-    Creates a single combined PDF report for all products.
+    Creates a single combined PDF report for all products with an enhanced summary.
     """
     if not all_products_data:
         print("No data collected to generate a report.")
@@ -165,7 +179,7 @@ def create_combo_pdf_report(all_products_data):
 
     pdf = PDF()
     
-    # --- Create Summary Page ---
+    # --- Create Enhanced Summary Page ---
     pdf.add_page()
     pdf.set_font('Helvetica', 'B', 18)
     pdf.cell(0, 10, 'Daily Report Summary', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
@@ -174,26 +188,54 @@ def create_combo_pdf_report(all_products_data):
     pdf.ln(10)
 
     # Summary Table Headers
-    pdf.set_font('Helvetica', 'B', 10)
-    pdf.cell(100, 10, 'Product Name', 1)
-    pdf.cell(40, 10, 'Market Price', 1)
-    pdf.cell(40, 10, 'Listed Median', 1, 1)
+    pdf.set_font('Helvetica', 'B', 8)
+    pdf.cell(80, 10, 'Product Name', 1, align='C')
+    pdf.cell(25, 10, 'Market Price', 1, align='C')
+    pdf.cell(20, 10, 'Change', 1, align='C')
+    pdf.cell(20, 10, 'Quantity', 1, align='C')
+    pdf.cell(20, 10, 'Qty Chg', 1, align='C')
+    pdf.cell(25, 10, 'Listed Median', 1, 1, align='C')
 
     # Summary Table Data
-    pdf.set_font('Helvetica', '', 9)
+    pdf.set_font('Helvetica', '', 8)
     for product_info in all_products_data:
-        pdf.cell(100, 10, product_info['name'][:55], 1) # Truncate long names
+        latest = product_info['latest']
+        pdf.cell(80, 10, product_info['name'][:50], 1) # Truncate long names
         
-        # Color code the market price based on change
-        price_change = product_info['latest'].get('Price Change', 0)
+        # Market Price Cell
+        pdf.cell(25, 10, latest['Market Price'], 1, align='R')
+        
+        # Price Change Cell
+        price_change = latest.get('Price Change', 0)
         if price_change > 0:
             pdf.set_text_color(34, 139, 34) # Forest Green
+            change_str = f"+${price_change:.2f}"
         elif price_change < 0:
             pdf.set_text_color(220, 20, 60) # Crimson
-        
-        pdf.cell(40, 10, product_info['latest']['Market Price'], 1)
+            change_str = f"-${abs(price_change):.2f}"
+        else:
+            change_str = "$0.00"
+        pdf.cell(20, 10, change_str, 1, align='R')
         pdf.set_text_color(0, 0, 0) # Reset color
-        pdf.cell(40, 10, product_info['latest']['Listed Median'], 1, 1)
+
+        # Current Quantity Cell
+        pdf.cell(20, 10, str(latest['Current Quantity']), 1, align='R')
+
+        # Quantity Change Cell
+        qty_change = latest.get('Quantity Change', 0)
+        if qty_change > 0:
+            pdf.set_text_color(34, 139, 34) # Green
+            qty_change_str = f"+{int(qty_change)}"
+        elif qty_change < 0:
+            pdf.set_text_color(220, 20, 60) # Red
+            qty_change_str = f"{int(qty_change)}"
+        else:
+            qty_change_str = "0"
+        pdf.cell(20, 10, qty_change_str, 1, align='R')
+        pdf.set_text_color(0, 0, 0) # Reset color
+
+        # Listed Median Cell
+        pdf.cell(25, 10, latest['Listed Median'], 1, 1, align='R')
 
 
     # --- Create a Detailed Page for Each Product ---
@@ -209,7 +251,6 @@ def create_combo_pdf_report(all_products_data):
         df['Date'] = pd.to_datetime(df['Date'])
         df_sorted = df.sort_values('Date')
         
-        # Convert data to numeric for plotting
         price_cols = ['Market Price', 'Most Recent Sale', 'Listed Median']
         for col in price_cols:
             df_sorted[col] = pd.to_numeric(df_sorted[col].astype(str).str.replace('$', '').str.replace(',', ''), errors='coerce')
@@ -218,25 +259,21 @@ def create_combo_pdf_report(all_products_data):
         for col in count_cols:
             df_sorted[col] = pd.to_numeric(df_sorted[col].astype(str).str.replace(',', ''), errors='coerce')
         
-        # Calculate 7-day moving average
-        df_sorted['7-Day Avg'] = df_sorted['Market Price'].rolling(window=7).mean()
+        df_sorted['7-Day Avg'] = df_sorted['Market Price'].rolling(window=7, min_periods=1).mean()
 
         plt.style.use('seaborn-v0_8-whitegrid')
         fig, ax1 = plt.subplots(figsize=(10, 5))
         
-        # Primary axis (Price)
         ax1.plot(df_sorted['Date'], df_sorted['Market Price'], label='Market Price', marker='o', linestyle='-', zorder=5)
         ax1.plot(df_sorted['Date'], df_sorted['7-Day Avg'], label='7-Day Avg', linestyle='--', color='orange', zorder=4)
-        ax1.scatter(df_sorted['Date'], df_sorted['Most Recent Sale'], label='Recent Sale', color='red', marker='x', zorder=10)
+        ax1.scatter(df_sorted['Date'], df_sorted['Most Recent Sale'], label='Recent Sale', color='red', marker='x', zorder=10, alpha=0.8)
         ax1.set_ylabel('Price (USD)')
         ax1.tick_params(axis='x', rotation=45)
         
-        # Secondary axis (Sellers)
         ax2 = ax1.twinx()
-        ax2.bar(df_sorted['Date'], df_sorted['Current Sellers'], label='Sellers', color='lightblue', alpha=0.6)
+        ax2.bar(df_sorted['Date'], df_sorted['Current Sellers'], label='Sellers', color='lightblue', alpha=0.6, width=0.5)
         ax2.set_ylabel('Number of Sellers')
 
-        # Combine legends
         lines, labels = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax2.legend(lines + lines2, labels + labels2, loc='upper left')
@@ -249,16 +286,16 @@ def create_combo_pdf_report(all_products_data):
         # --- Add a new page to the PDF for this product ---
         pdf.add_page()
         
-        # Title
         pdf.set_font('Helvetica', 'B', 16)
         pdf.multi_cell(0, 10, product_name, 0, 'C')
         pdf.ln(5)
         
-        # Summary Table for the product
         pdf.set_font('Helvetica', 'B', 12)
         pdf.cell(0, 10, 'Latest Data Point', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_font('Helvetica', '', 11)
-        for key, value in latest_data.items():
+        # Exclude change values from the detailed page summary
+        data_to_show = {k: v for k, v in latest_data.items() if 'Change' not in k}
+        for key, value in data_to_show.items():
             pdf.cell(50, 8, f"{key}:", new_x=XPos.RIGHT, new_y=YPos.TOP)
             pdf.cell(0, 8, str(value), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(5)
@@ -266,10 +303,8 @@ def create_combo_pdf_report(all_products_data):
         pdf.ln(5)
 
 
-        # Add Chart
         pdf.image(chart_image_path, x=None, y=None, w=190)
         
-        # Clean up the chart image
         os.remove(chart_image_path)
 
     # --- Save the final combined PDF ---
@@ -278,7 +313,6 @@ def create_combo_pdf_report(all_products_data):
     print(f"Successfully generated combo report: {pdf_file_path}")
 
 if __name__ == '__main__':
-    # --- Selenium Setup with webdriver-manager ---
     options = webdriver.ChromeOptions()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
@@ -298,7 +332,6 @@ if __name__ == '__main__':
                 print("Scraped Data:", scraped_data)
                 full_dataset = update_data(product_name, scraped_data)
                 
-                # Store all the necessary info for the combo report
                 all_products_data.append({
                     'name': product_name,
                     'latest': scraped_data,
@@ -308,7 +341,6 @@ if __name__ == '__main__':
                 print(f"Could not retrieve data for {url}")
             print("-" * 20)
         
-        # After the loop, create the single combo report
         if all_products_data:
             create_combo_pdf_report(all_products_data)
 
