@@ -36,7 +36,7 @@ Follow these steps to get the project running.
 
 ### 2. Clone the Repository
 ```bash
-git clone [https://github.com/dmeehan-I/tcgplayerscraper.git](https://github.com/dmeehan-I/tcgplayerscraper.git)
+git clone [https://github.com/Mewsterion/tcgplayerscraper.git](https://github.com/Mewsterion/tcgplayerscraper.git)
 cd tcgplayerscraper
 ```
 
