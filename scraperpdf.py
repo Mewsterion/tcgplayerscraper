@@ -514,7 +514,7 @@ def create_combo_pdf_report(all_products_data):
         (22, 'Market $'),
         (22, 'Change'),
         (20, 'Qty'),
-        (15, 'Qty Δ'),
+        (15, 'Qty Chg'),
         (18, 'Sold/Day'),
         (21, 'Avg Sale'),
     ]
