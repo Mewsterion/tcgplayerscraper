@@ -42,8 +42,9 @@ URLS = [
     'https://www.tcgplayer.com/product/501999'
 ]
 
-# Number of recent sales to store per product
+# Number of recent sales / top listings to store per product
 RECENT_SALES_COUNT = 10
+LISTING_COUNT = 6
 
 
 class PDF(FPDF):
@@ -63,27 +64,35 @@ def extract_product_id(url):
     return m.group(1) if m else None
 
 
-def get_recent_sales_from_network_logs(driver, product_id):
+def get_api_data_from_network_logs(driver, product_id):
     """
-    Parse Chrome performance logs (which capture all XHR/fetch activity) to find
-    TCGplayer's internal sales API response. Must be called after page has loaded.
-    Returns parsed JSON if found, else None.
+    Read Chrome performance logs ONCE and scan for both sales and listings API responses.
+    Returns {'sales': data_or_none, 'listings': data_or_none}.
+    NOTE: get_log('performance') clears the buffer — must only be called once per page load.
     """
+    result = {'sales': None, 'listings': None}
     try:
         logs = driver.get_log('performance')
     except Exception as e:
         print(f"  → Performance log unavailable: {e}")
-        return None
+        return result
 
+    pid = str(product_id)
     for log in logs:
+        if result['sales'] and result['listings']:
+            break
         try:
             message = json.loads(log['message'])['message']
             if message.get('method') != 'Network.responseReceived':
                 continue
             url = message.get('params', {}).get('response', {}).get('url', '')
-            if 'sales' not in url.lower():
+            if pid not in url:
                 continue
-            if str(product_id) not in url:
+
+            url_lower = url.lower()
+            want_sales = 'sales' in url_lower and not result['sales']
+            want_listings = 'listing' in url_lower and not result['listings']
+            if not want_sales and not want_listings:
                 continue
 
             req_id = message['params']['requestId']
@@ -93,12 +102,114 @@ def get_recent_sales_from_network_logs(driver, product_id):
                 continue
             data = json.loads(body_text)
             if data:
-                print(f"  → Found sales data via network log: {url}")
-                return data
+                if want_sales:
+                    print(f"  → Sales via network log: {url}")
+                    result['sales'] = data
+                elif want_listings:
+                    print(f"  → Listings via network log: {url}")
+                    result['listings'] = data
         except Exception:
             continue
 
+    return result
+
+
+def get_listings_via_js(driver, product_id):
+    """
+    Try to fetch active listings from TCGplayer's internal API using browser context.
+    Listings are sorted lowest price first by default.
+    """
+    endpoints = [
+        f'/api/product/{product_id}/listings?rows={LISTING_COUNT}&sellerStatus=Live&channel=0&minCondition=7',
+        f'/api/v2/product/{product_id}/listings?rows={LISTING_COUNT}&sellerStatus=Live',
+        f'/api/catalog/product/{product_id}/listings?rows={LISTING_COUNT}',
+    ]
+    for endpoint in endpoints:
+        try:
+            result = driver.execute_async_script("""
+                const [url, callback] = [arguments[0], arguments[arguments.length - 1]];
+                fetch(url, {
+                    credentials: 'include',
+                    headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+                })
+                .then(r => r.ok ? r.json() : null)
+                .then(data => callback(data))
+                .catch(() => callback(null));
+            """, endpoint)
+            if result:
+                print(f"  → Got listings via JS fetch: {endpoint}")
+                return result
+        except Exception:
+            continue
     return None
+
+
+def parse_listings_response(api_response):
+    """
+    Normalize a listings API response into a list of dicts:
+      price, qty, condition, seller, verified (bool), direct (bool)
+    Sorted lowest price first, capped at LISTING_COUNT.
+    """
+    if not api_response:
+        return []
+
+    if isinstance(api_response, list):
+        items = api_response
+    elif isinstance(api_response, dict):
+        items = (api_response.get('results') or
+                 api_response.get('data') or
+                 api_response.get('listings') or
+                 api_response.get('items') or [])
+    else:
+        return []
+
+    listings = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        price = (item.get('price') or item.get('listingPrice') or
+                 item.get('lowestPrice') or item.get('salePrice') or '')
+        qty = (item.get('quantity') or item.get('qty') or item.get('quantityAvailable') or '')
+        condition = (item.get('condition') or item.get('conditionName') or
+                     item.get('printing') or 'Near Mint')
+        seller = (item.get('sellerName') or item.get('seller') or
+                  item.get('storeName') or '')
+        # TCGplayer Direct = fulfilled by TCGplayer; goldSeller = top-rated
+        direct = bool(item.get('directProduct') or item.get('direct') or
+                      item.get('tcgDirectSeller') or item.get('channelReason') == 'Direct')
+        verified = direct or bool(item.get('goldSeller') or item.get('verified') or
+                                  item.get('topRatedSeller') or item.get('sellerRating', 0) >= 4.5)
+        # Skip listings with custom photos — these are almost always
+        # "dice only / no cards" or other non-product listings
+        has_custom_photo = bool(
+            item.get('customListingImage') or
+            item.get('hasCustomPhoto') or
+            item.get('customPhoto') or
+            item.get('photo') or
+            item.get('listingPhoto') or
+            item.get('imageUrl')
+        )
+        if has_custom_photo:
+            continue
+
+        if price != '':
+            listings.append({
+                'price': price,
+                'qty': qty,
+                'condition': condition,
+                'seller': seller,
+                'verified': verified,
+                'direct': direct,
+            })
+
+    # Sort by price ascending, return top N
+    def price_key(l):
+        try:
+            return float(str(l['price']).replace('$', '').replace(',', ''))
+        except Exception:
+            return 9999999
+    listings.sort(key=price_key)
+    return listings[:LISTING_COUNT]
 
 
 def get_recent_sales_via_js(driver, product_id):
@@ -391,29 +502,34 @@ def scrape_product_data(url, driver):
         print(f"  → {product_name}: Market={market_price}, MRS={most_recent_sale}, "
               f"Qty={current_quantity}, TotalSold={total_sold}, SoldYday={sold_yesterday}")
 
-        # --- Recent individual sales ---
+        # --- Recent sales + active listings ---
         recent_sales = []
+        top_listings = []
 
-        # Strategy 1: Network log interception (most reliable if TCGplayer makes an XHR)
+        # Strategy 1: Network log interception — read logs ONCE, extract both
         if product_id:
-            api_data = get_recent_sales_from_network_logs(driver, product_id)
-            if api_data:
-                recent_sales = parse_recent_sales_response(api_data)
+            log_data = get_api_data_from_network_logs(driver, product_id)
+            if log_data['sales']:
+                recent_sales = parse_recent_sales_response(log_data['sales'])
+            if log_data['listings']:
+                top_listings = parse_listings_response(log_data['listings'])
 
-        # Strategy 2: JS fetch from browser context (same-origin, cookies included)
+        # Strategy 2: JS fetch fallback (same-origin, cookies included)
         if not recent_sales and product_id:
             api_data = get_recent_sales_via_js(driver, product_id)
             if api_data:
                 recent_sales = parse_recent_sales_response(api_data)
 
-        # Strategy 3: Click the popup
+        if not top_listings and product_id:
+            api_data = get_listings_via_js(driver, product_id)
+            if api_data:
+                top_listings = parse_listings_response(api_data)
+
+        # Strategy 3: Click the popup for sales (last resort)
         if not recent_sales:
             recent_sales = try_sales_popup(driver, wait)
 
-        if recent_sales:
-            print(f"  → Got {len(recent_sales)} recent sale records")
-        else:
-            print("  → No recent sales data retrieved")
+        print(f"  → {len(recent_sales)} sale records, {len(top_listings)} listings captured")
 
         return product_name, {
             "Date": datetime.now().strftime('%Y-%m-%d'),
@@ -425,6 +541,7 @@ def scrape_product_data(url, driver):
             "Sold Yesterday": sold_yesterday,
             "Total Sold": total_sold,
             "Recent Sales": json.dumps(recent_sales) if recent_sales else '[]',
+            "Top Listings": json.dumps(top_listings) if top_listings else '[]',
         }
 
     except Exception as e:
@@ -508,15 +625,31 @@ def create_combo_pdf_report(all_products_data):
     pdf.cell(0, 10, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
     pdf.ln(10)
 
+    def parse_listings_json(raw):
+        try:
+            return json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception:
+            return []
+
+    def lowest_listing_price(listings):
+        """Return the lowest listed price as a float, or None."""
+        for l in listings:
+            try:
+                return float(str(l.get('price', '')).replace('$', '').replace(',', ''))
+            except Exception:
+                continue
+        return None
+
     # Table header
     cols = [
-        (72, 'Product Name'),
-        (22, 'Market $'),
-        (22, 'Change'),
-        (20, 'Qty'),
-        (15, 'Qty Chg'),
-        (18, 'Sold/Day'),
-        (21, 'Avg Sale'),
+        (62, 'Product Name'),
+        (20, 'Market $'),
+        (20, 'Change'),
+        (18, 'Qty'),
+        (14, 'Qty Chg'),
+        (16, 'Sold/Day'),
+        (20, 'Avg Sale'),
+        (20, 'Low Ask'),
     ]
     pdf.set_font('Helvetica', 'B', 7)
     for w, txt in cols:
@@ -529,27 +662,32 @@ def create_combo_pdf_report(all_products_data):
     for prod in all_products_data:
         latest = prod['latest']
 
-        pdf.cell(72, 8, prod['name'][:50], 1)
-        pdf.cell(22, 8, str(latest.get('Market Price', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(62, 8, prod['name'][:44], 1)
+        pdf.cell(20, 8, str(latest.get('Market Price', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         pc = float(latest.get('Price Change', 0) or 0)
         pdf.set_text_color(34, 139, 34) if pc > 0 else (pdf.set_text_color(220, 20, 60) if pc < 0 else None)
-        pdf.cell(22, 8, f"{'+' if pc > 0 else ''}${pc:.2f}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(20, 8, f"{'+' if pc > 0 else ''}${pc:.2f}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
         pdf.set_text_color(0, 0, 0)
 
-        pdf.cell(20, 8, str(latest.get('Current Quantity', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(18, 8, str(latest.get('Current Quantity', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         qc = int(float(latest.get('Quantity Change', 0) or 0))
         pdf.set_text_color(34, 139, 34) if qc > 0 else (pdf.set_text_color(220, 20, 60) if qc < 0 else None)
-        pdf.cell(15, 8, f"{'+' if qc > 0 else ''}{qc}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(14, 8, f"{'+' if qc > 0 else ''}{qc}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
         pdf.set_text_color(0, 0, 0)
 
         ds = int(float(latest.get('Daily Sales', 0) or 0))
-        pdf.cell(18, 8, str(ds), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(16, 8, str(ds), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         avg = _compute_avg_recent_sale(latest.get('Recent Sales', '[]'))
         avg_str = f"${avg:.2f}" if avg is not None else 'N/A'
-        pdf.cell(21, 8, avg_str, 1, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(20, 8, avg_str, 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+
+        listings = parse_listings_json(latest.get('Top Listings', '[]'))
+        low_ask = lowest_listing_price(listings)
+        low_ask_str = f"${low_ask:.2f}" if low_ask is not None else 'N/A'
+        pdf.cell(20, 8, low_ask_str, 1, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     # --- Per-product detail pages ---
     for prod in all_products_data:
@@ -652,15 +790,53 @@ def create_combo_pdf_report(all_products_data):
             pdf.cell(0, 7, f'Last {len(recent_sales)} Individual Sales', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font('Helvetica', 'B', 8)
             pdf.cell(50, 6, 'Date', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
-            pdf.cell(60, 6, 'Condition', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
-            pdf.cell(40, 6, 'Price', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
+            pdf.cell(55, 6, 'Condition', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
+            pdf.cell(45, 6, 'Price', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
             pdf.cell(40, 6, 'Qty', 1, align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font('Helvetica', '', 8)
             for sale in recent_sales:
                 pdf.cell(50, 6, str(sale.get('date', ''))[:20], 1, new_x=XPos.RIGHT, new_y=YPos.TOP)
-                pdf.cell(60, 6, str(sale.get('condition', ''))[:25], 1, new_x=XPos.RIGHT, new_y=YPos.TOP)
-                pdf.cell(40, 6, str(sale.get('price', '')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+                pdf.cell(55, 6, str(sale.get('condition', ''))[:25], 1, new_x=XPos.RIGHT, new_y=YPos.TOP)
+                pdf.cell(45, 6, str(sale.get('price', '')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
                 pdf.cell(40, 6, str(sale.get('qty', '')), 1, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        # Active listings table
+        top_listings = []
+        try:
+            tl_raw = latest.get('Top Listings', '[]')
+            top_listings = json.loads(tl_raw) if isinstance(tl_raw, str) else (tl_raw or [])
+        except Exception:
+            pass
+
+        if top_listings:
+            pdf.ln(3)
+            pdf.set_font('Helvetica', 'B', 10)
+            pdf.cell(0, 7, f'Top {len(top_listings)} Active Listings (Lowest Price First)', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font('Helvetica', 'B', 8)
+            pdf.cell(30, 6, 'Price', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
+            pdf.cell(15, 6, 'Qty', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
+            pdf.cell(45, 6, 'Condition', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
+            pdf.cell(65, 6, 'Seller', 1, align='C', new_x=XPos.RIGHT, new_y=YPos.TOP)
+            pdf.cell(35, 6, 'Status', 1, align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font('Helvetica', '', 8)
+            for listing in top_listings:
+                price_str = str(listing.get('price', 'N/A'))
+                if not price_str.startswith('$'):
+                    try:
+                        price_str = f"${float(price_str):.2f}"
+                    except Exception:
+                        pass
+                status = 'Direct' if listing.get('direct') else ('Verified' if listing.get('verified') else 'Standard')
+                pdf.cell(30, 6, price_str, 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+                pdf.cell(15, 6, str(listing.get('qty', '')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+                pdf.cell(45, 6, str(listing.get('condition', ''))[:22], 1, new_x=XPos.RIGHT, new_y=YPos.TOP)
+                pdf.cell(65, 6, str(listing.get('seller', ''))[:30], 1, new_x=XPos.RIGHT, new_y=YPos.TOP)
+                if listing.get('direct'):
+                    pdf.set_text_color(0, 100, 200)
+                elif listing.get('verified'):
+                    pdf.set_text_color(34, 139, 34)
+                pdf.cell(35, 6, status, 1, align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_text_color(0, 0, 0)
 
         pdf.ln(3)
         pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 190, pdf.get_y())
