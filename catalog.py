@@ -145,14 +145,25 @@ def refresh_catalog(progress_callback=None):
 
 
 def search_catalog(query, limit=50, sealed_only=False):
-    """Search catalog by name, group, or product ID. Returns results with is_tracked flag."""
+    """Search catalog by name, group, or product ID.
+    Supports multi-term search -- every word must match somewhere in name, group_name, or product_id.
+    Returns results with is_tracked flag."""
     tracked = get_tracked_ids()
     conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
-    q = f'%{query}%'
-    sql = '''SELECT product_id, name, group_name, url, product_type FROM product_catalog
-             WHERE (name LIKE ? OR group_name LIKE ? OR product_id LIKE ?)'''
-    params = [q, q, q]
+    terms = query.strip().split()
+    if not terms:
+        conn.close()
+        return []
+    # Each term must appear in name OR group_name OR product_id
+    where_clauses = []
+    params = []
+    for term in terms:
+        t = f'%{term}%'
+        where_clauses.append("(name LIKE ? OR group_name LIKE ? OR product_id LIKE ?)")
+        params.extend([t, t, t])
+    sql = 'SELECT product_id, name, group_name, url, product_type FROM product_catalog WHERE '
+    sql += ' AND '.join(where_clauses)
     if sealed_only:
         sql += " AND product_type = 'sealed'"
     sql += ' ORDER BY name LIMIT ?'
