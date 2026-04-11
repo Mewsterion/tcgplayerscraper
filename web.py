@@ -128,6 +128,21 @@ def create_app():
             f.write(content)
         return redirect(url_for("manage", saved=1))
 
+    # --- Dashboard API ---
+
+    @app.route("/api/dashboard")
+    def api_dashboard():
+        products = scraperpdf.get_all_latest_from_db()
+        for p in products:
+            p['lowest_ask'] = _lowest_ask(p.get('top_listings'))
+            # Drop bulky JSON fields not needed for the table
+            p.pop('top_listings', None)
+            p.pop('recent_sales', None)
+        q = request.args.get("q", "").strip().lower()
+        if q:
+            products = [p for p in products if q in p["product_name"].lower() or q in str(p["product_id"])]
+        return jsonify(products)
+
     # --- Scrape API ---
 
     @app.route("/api/scrape", methods=["POST"])
