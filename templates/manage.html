@@ -120,8 +120,9 @@
                     btn.outerHTML = '<span class="badge badge-tracked">Tracked</span>';
                 }
             }
-            // Reload tracked list
+            // Reload tracked list and raw textarea
             loadTrackedProducts();
+            syncRawTextarea();
         });
     }
 
@@ -146,7 +147,16 @@
                     badge.outerHTML = `<button class="outline" onclick="addProduct('${productId}')">Add</button>`;
                 }
             }
+            syncRawTextarea();
         });
+    }
+
+    function syncRawTextarea() {
+        fetch('/api/tracked/raw')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('products-text').value = data.content;
+            });
     }
 
     // --- Tracked List ---

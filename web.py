@@ -209,4 +209,13 @@ def create_app():
         removed = catalog.remove_tracked_id(data["product_id"])
         return jsonify({"removed": removed})
 
+    @app.route("/api/tracked/raw")
+    def api_tracked_raw():
+        products_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), scraperpdf.PRODUCTS_FILE)
+        content = ""
+        if os.path.isfile(products_path):
+            with open(products_path, "r") as f:
+                content = f.read()
+        return jsonify({"content": content})
+
     return app
