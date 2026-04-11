@@ -22,7 +22,11 @@ PRODUCT_NAMES = [
     "Destined Rivals Booster Box",
     "Journey Together Enhanced Booster Box",
     "Surging Sparks Booster Box",
-    # Add more names...
+    "Phantasmal Flames Booster Box",
+    "Blooming Waters Premium Collection",
+    "Paldean Fates Great Tusk ex & Iron Treads ex Premium Collection",
+    "Unova Heavy Hitters Premium Collection",
+    "First Partner Illustration Collection Series 1",
 ]
 # ---------------------------------------------------------------
 
@@ -83,23 +87,20 @@ if __name__ == '__main__':
     finally:
         driver.quit()
 
-    # Write urls.txt
+    # Write urls_found.txt — paste-ready URLS list for scraperpdf.py
     with open('urls_found.txt', 'w') as f:
+        f.write("URLS = [\n")
         for name, url in results:
             if url:
-                f.write(url + '\n')
+                f.write(f"    '{url}',  # {name}\n")
             else:
-                f.write(f"# NOT FOUND: {name}\n")
+                f.write(f"    # NOT FOUND: {name}\n")
+        f.write("]\n")
 
-    # Print Python-ready URLS list for copy-paste into scraperpdf.py
+    # Also print to console
     print("\n\n# --- Copy this into scraperpdf.py ---")
-    print("URLS = [")
-    for name, url in results:
-        if url:
-            print(f"    '{url}',  # {name}")
-        else:
-            print(f"    # NOT FOUND: {name}")
-    print("]")
+    with open('urls_found.txt') as f:
+        print(f.read())
 
     found = sum(1 for _, u in results if u)
     print(f"\nFound {found}/{len(PRODUCT_NAMES)} products. Saved to urls_found.txt")
