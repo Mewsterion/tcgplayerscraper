@@ -165,6 +165,28 @@ def create_app():
             return jsonify({"error": "No data in database"}), 404
         return send_file(output_path, as_attachment=True, download_name="TCGplayer_Combo_Report.pdf")
 
+    @app.route("/api/csv")
+    def api_csv():
+        products = scraperpdf.get_all_latest_from_db()
+        if not products:
+            return jsonify({"error": "No data in database"}), 404
+        for p in products:
+            p['lowest_ask'] = _lowest_ask(p.get('top_listings'))
+            p.pop('top_listings', None)
+            p.pop('recent_sales', None)
+        import csv
+        import io
+        output = io.StringIO()
+        fields = ['product_id', 'product_name', 'date', 'market_price', 'lowest_ask',
+                  'most_recent_sale', 'listed_median', 'price_change', 'current_quantity',
+                  'quantity_change', 'current_sellers', 'total_sold', 'daily_sales']
+        writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(products)
+        resp = app.response_class(output.getvalue(), mimetype='text/csv')
+        resp.headers['Content-Disposition'] = 'attachment; filename=tcgplayer_export.csv'
+        return resp
+
     # --- Catalog API ---
 
     @app.route("/api/catalog/search")
