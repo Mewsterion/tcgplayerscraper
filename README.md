@@ -12,9 +12,10 @@ This Python tool tracks prices for sealed Pokemon (and other TCG) products on TC
 - **SQLite Storage**: All price history stored in `tcgplayer.db` with indexed queries for fast lookups.
 - **Rate Limiting**: Configurable delays between requests, retry with exponential backoff, and automatic Chrome session rotation to avoid rate limits.
 - **Web UI** (`--serve`):
-  - **Dashboard** with searchable product table showing market price, lowest ask, last sale, price change, quantity, and total sold.
+  - **Reactive Dashboard** with sortable columns (click headers to sort asc/desc), column visibility toggles, column reordering, and instant client-side search filtering. Preferences persist across sessions via localStorage.
+  - **Bulk product removal** from the dashboard via row checkboxes and select-all.
   - **Product detail pages** with stats, recent sales, active listings, and interactive Chart.js price history charts.
-  - **Manage Products** page with catalog search, add/remove tracking, and bulk edit.
+  - **Manage Products** page with catalog search, add/remove tracking, and bulk edit. Raw product list stays in sync with UI changes.
   - **Run Scrape** and **Download PDF** buttons with live progress tracking.
   - **Refresh Catalog** to pull latest products from tcgcsv.com API.
 - **Combined PDF Report** (`TCGplayer_Combo_Report.pdf`):
@@ -42,6 +43,17 @@ cd tcgplayerscraper
 ```
 
 ### 3. Install Required Libraries
+
+**With uv (recommended):**
+```bash
+uv sync
+```
+This installs all dependencies from `pyproject.toml` into a `.venv` automatically. Then run commands with `uv run`:
+```bash
+uv run python scraperpdf.py --serve
+```
+
+**With pip:**
 ```bash
 pip install pandas matplotlib beautifulsoup4 selenium webdriver-manager fpdf2 flask
 ```

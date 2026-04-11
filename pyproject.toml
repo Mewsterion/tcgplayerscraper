@@ -1,0 +1,16 @@
+[project]
+name = "tcgplayerscraper"
+version = "1.0.0"
+description = "Track sealed Pokemon TCG product prices on TCGplayer.com with scraping, SQLite storage, PDF reports, and a web UI"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pandas",
+    "matplotlib",
+    "beautifulsoup4",
+    "selenium",
+    "webdriver-manager",
+    "fpdf2",
+    "flask",
+    "setuptools",
+]
