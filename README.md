@@ -1,34 +1,30 @@
 # TCGplayer Daily Price Tracker
 
-This Python script automates the process of tracking prices for collectible trading cards on TCGplayer.com. It runs daily, scrapes data for multiple products, records the history in CSV files, and generates a single, combined PDF report with advanced visualizations and a summary of the day's market activity.
+This Python script automates the process of tracking prices for sealed Pokemon (and other TCG) products on TCGplayer.com. It runs daily, scrapes data for multiple products, records the history in CSV files, and generates a combined PDF report with visualizations and a summary of the day's market activity.
 
-The live project can be found on GitHub: [https://github.com/dmeehan-I/tcgplayerscraper](https://github.com/dmeehan-I/tcgplayerscraper)
+The live project can be found on GitHub: [https://github.com/mewsterion/tcgplayerscraper](https://github.com/mewsterion/tcgplayerscraper)
 
 ## Features
 
-- **Multi-Product Tracking**: Easily track multiple products by adding their URLs to a list.
-- **Automated Data Scraping**: Uses Selenium to control a web browser, ensuring that all dynamically loaded (JavaScript) content is captured correctly.
-- **Historical Data Logging**: Saves the daily scraped data into individual `.csv` files for each product, creating a historical price database.
-- **Combined PDF Reporting**: Generates a single, professional PDF report (`TCGplayer_Combo_Report.pdf`) with:
-  - An **Executive Summary** page comparing all tracked products at a glance.
-  - **Color-Coded Price & Quantity Changes** on the summary page (green for up, red for down).
-  - **Detailed Individual Pages** for each product.
-  - **Advanced Data Visualizations**, including a 7-day moving average, recent sale scatter plots, and a bar chart for the number of sellers.
-- **Task Scheduling**: Can be easily automated to run at a specific time every day using Windows Task Scheduler.
+- **Multi-Product Tracking**: Track multiple products by adding their TCGplayer URLs to the `URLS` list.
+- **Automated Data Scraping**: Uses Selenium with Chrome in headless mode. Captures dynamically loaded content and intercepts internal TCGplayer API calls via Chrome DevTools Protocol (CDP).
+- **Recent Sales Data**: Captures the last 10 individual sale records (date, condition, price, qty) per product by intercepting TCGplayer's internal `mpapi.tcgplayer.com` sales endpoint.
+- **Active Listings**: Fetches the lowest 6 active listings per product via TCGplayer's search API (POST), filtered to English-only, standard listing type, and within a reasonable price range of market value — eliminating Korean/Portuguese variants, loose packs, opened shells, dice-only listings, and other irrelevant entries.
+- **Historical Data Logging**: Saves daily data to individual `.csv` files per product, building a historical price database over time.
+- **Combined PDF Report** (`TCGplayer_Combo_Report.pdf`):
+  - **Summary page** with Market Price, day-over-day change, quantity, daily sales, average recent sale price, and lowest active ask — all color-coded.
+  - **Detail pages** per product with latest data, recent individual sales table, active listings table (with Direct/Verified seller status), and a price history chart.
+  - **Charts** showing Market Price, 7-day moving average, most recent sale, average of last 10 sales, daily sales volume, and active seller count.
+- **Automated Scheduling**: Runs via Windows Task Scheduler using the included `scrape.bat`.
 
-## Sample Report Output
+## How It Works
 
-The generated PDF report includes a summary page and detailed pages for each product.
+TCGplayer does not expose sales history or active listings in a public API. This scraper works around that in two ways:
 
-**Summary Page:**
-*The summary page includes columns for Market Price, Price Change, Current Quantity, Quantity Change, and Listed Median, with color-coded cells for positive or negative changes.*
-
-**Detailed Product Page:**
-*The detailed page for each item includes a chart showing Market Price history, a 7-day moving average, recent sale prices, and the number of sellers over time.*
+1. **Sales data** — After the page loads, Chrome's performance logs are scanned for the `mpapi.tcgplayer.com/v2/product/{id}/latestsales` XHR response and the body is extracted directly.
+2. **Listings data** — TCGplayer's listing search API (`mp-search-api.tcgplayer.com`) requires a POST request with a filter body to return actual listing records (GET returns aggregations only). The script posts from the browser context so session cookies are included automatically.
 
 ## Setup & Installation
-
-Follow these steps to get the project running.
 
 ### 1. Prerequisites
 - Python 3.9 or newer
@@ -36,65 +32,57 @@ Follow these steps to get the project running.
 
 ### 2. Clone the Repository
 ```bash
-git clone [https://github.com/Mewsterion/tcgplayerscraper.git](https://github.com/Mewsterion/tcgplayerscraper.git)
+git clone https://github.com/mewsterion/tcgplayerscraper.git
 cd tcgplayerscraper
 ```
 
 ### 3. Install Required Libraries
-This project requires several Python libraries. You can install them all with pip:
-
 ```bash
 pip install pandas matplotlib beautifulsoup4 selenium webdriver-manager fpdf2
 ```
 
-**For Python 3.12+ Users:**
-The `distutils` package was removed from Python 3.12. If you encounter a `ModuleNotFoundError` for `distutils`, you may also need to install `setuptools`:
+**Python 3.12+ only:** `distutils` was removed in 3.12. If you hit a `ModuleNotFoundError`:
 ```bash
 pip install setuptools
 ```
 
 ## Configuration
 
-Open the `dailyreport.py` script and edit the `URLS` list to include the TCGplayer product pages you want to track.
+Open `scraperpdf.py` and edit the top section:
 
 ```python
-# --- Configuration ---
-# Add as many product URLs as you want to this list
 URLS = [
-    '[https://www.tcgplayer.com/product/624679/](https://www.tcgplayer.com/product/624679/)',
-    '[https://www.tcgplayer.com/product/623628](https://www.tcgplayer.com/product/623628)',
-    # Add more URLs here
+    'https://www.tcgplayer.com/product/624679/',
+    'https://www.tcgplayer.com/product/623628',
+    # Add more product URLs here
 ]
+
+RECENT_SALES_COUNT = 10   # number of recent sales to capture
+LISTING_COUNT = 6         # number of lowest active listings to capture
+MIN_LISTING_PRICE_PCT = 0.50  # filter listings below 50% of market price
 ```
 
 ## Running the Script
 
-To run the script manually, navigate to the project directory in your terminal and execute the following command:
-
 ```bash
-python dailyreport.py
+python scraperpdf.py
 ```
 
-The script will then:
-1. Launch a headless Chrome browser.
-2. Visit each URL in your list and scrape the data.
-3. Update the corresponding `.csv` file for each product.
-4. Generate the `TCGplayer_Combo_Report.pdf` file in the same directory.
+The script will:
+1. Launch a headless Chrome browser with CDP network tracking enabled.
+2. Visit each URL, scrape page data, and intercept API responses for sales and listings.
+3. Append today's data to each product's `.csv` file.
+4. Generate `TCGplayer_Combo_Report.pdf`.
 
 ## Scheduling (Windows)
 
-You can use the Windows Task Scheduler to run this script automatically every day.
+The included `scrape.bat` handles venv activation and logging. To schedule it daily:
 
-1.  **Open Command Prompt as an Administrator.**
-2.  **Find your Python path** by running:
-    ```cmd
-    where python
-    ```
-    (e.g., `C:\Users\YourUser\AppData\Local\Programs\Python\Python311\python.exe`)
-3.  **Find your script's full path** (e.g., `D:\Projects\tcgplayer\dailyreport.py`).
-4.  **Run the `schtasks` command**, replacing the placeholder paths with your actual paths. The following example schedules the task for 8:00 AM daily.
+1. Find your Python path: `where python`
+2. Open Task Scheduler and create a new task, or use the command below (run as Administrator):
 
 ```cmd
-schtasks /create /tn "TCGplayer Daily Report" /tr "'C:\path\to\your\python.exe' 'D:\path\to\your\dailyreport.py'" /sc DAILY /st 08:00
+schtasks /create /tn "TCGplayer Daily Report" /tr "D:\path\to\tcgplayer\scrape.bat" /sc DAILY /st 05:30
 ```
-This creates a task that will run in the background at the specified time each day.
+
+Completion timestamps are logged to `scraper_log.txt`.
