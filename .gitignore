@@ -35,8 +35,7 @@ ENV/
 .idea/
 .vs/
 
-# Claude
-CLAUDE.md
+# Claude (CLAUDE.md is intentionally committed for project setup instructions)
 
 # Project Specific
 *.pdf
