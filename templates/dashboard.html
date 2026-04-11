@@ -51,6 +51,13 @@
         background: var(--pico-card-background-color, #1a1a2e);
     }
     .table-footer { font-size: 0.8rem; opacity: 0.6; margin-top: 0.3rem; }
+    .row-checkbox { width: 1.1rem; height: 1.1rem; margin: 0; cursor: pointer; }
+    th.checkbox-col, td.checkbox-col { width: 2rem; text-align: center; padding: 0.3rem; }
+    .remove-btn {
+        margin: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;
+        background: #ef4444; border-color: #ef4444; color: #fff;
+    }
+    .remove-btn:hover { background: #dc2626; border-color: #dc2626; }
 </style>
 {% endblock %}
 
@@ -60,7 +67,10 @@
 
     <div style="display:flex; gap:0.5rem; margin-bottom:1rem; align-items:center; flex-wrap:wrap;">
         <input type="search" x-model="searchQuery" placeholder="Search products..." style="margin:0; max-width:400px;">
-        <div class="col-dropdown" style="margin-left:auto;" @click.outside="showColumnMenu = false">
+        <div style="margin-left:auto; display:flex; gap:0.5rem; align-items:center;">
+        <button x-show="selectedIds.length > 0" x-cloak class="remove-btn"
+                @click="removeSelected()" x-text="'Remove ' + selectedIds.length + ' selected'"></button>
+        <div class="col-dropdown" @click.outside="showColumnMenu = false">
             <button type="button" class="outline" style="margin:0; padding:0.4rem 0.8rem; font-size:0.85rem;"
                     @click="showColumnMenu = !showColumnMenu">
                 Columns
@@ -86,6 +96,7 @@
                 </div>
             </div>
         </div>
+        </div>
     </div>
 
     <template x-if="loading">
@@ -101,6 +112,10 @@
             <table role="grid">
                 <thead>
                     <tr>
+                        <th class="checkbox-col">
+                            <input type="checkbox" class="row-checkbox"
+                                   :checked="allSelected" @click.stop="toggleSelectAll()">
+                        </th>
                         <template x-for="col in visibleColumnDefs" :key="col.key">
                             <th data-sortable
                                 :style="col.align === 'right' ? 'text-align:right' : ''"
@@ -115,6 +130,11 @@
                 <tbody>
                     <template x-for="p in sortedFilteredProducts" :key="p.product_id">
                         <tr style="cursor:pointer;" @click="window.location='/product/' + p.product_id">
+                            <td class="checkbox-col" @click.stop>
+                                <input type="checkbox" class="row-checkbox"
+                                       :checked="selectedIds.includes(p.product_id)"
+                                       @change="toggleSelect(p.product_id)">
+                            </td>
                             <template x-for="col in visibleColumnDefs" :key="col.key">
                                 <td :style="col.align === 'right' ? 'text-align:right' : ''">
                                     <template x-if="col.key === 'price_change'">
@@ -194,6 +214,7 @@ function dashboardApp() {
         loading: true,
         showColumnMenu: false,
         searchQuery: '',
+        selectedIds: [],
         allColumns: ALL_COLUMNS,
         columnOrder: prefs?.columnOrder || [...DEFAULT_ORDER],
         sortColumn: prefs?.sortColumn || 'product_name',
@@ -237,6 +258,46 @@ function dashboardApp() {
             const total = this.products.length;
             if (shown === total) return 'Showing ' + total + ' products';
             return 'Showing ' + shown + ' of ' + total + ' products';
+        },
+
+        get allSelected() {
+            const visible = this.sortedFilteredProducts;
+            return visible.length > 0 && visible.every(p => this.selectedIds.includes(p.product_id));
+        },
+
+        toggleSelect(productId) {
+            const idx = this.selectedIds.indexOf(productId);
+            if (idx > -1) {
+                this.selectedIds.splice(idx, 1);
+            } else {
+                this.selectedIds.push(productId);
+            }
+        },
+
+        toggleSelectAll() {
+            const visible = this.sortedFilteredProducts;
+            if (this.allSelected) {
+                const visibleIds = new Set(visible.map(p => p.product_id));
+                this.selectedIds = this.selectedIds.filter(id => !visibleIds.has(id));
+            } else {
+                const current = new Set(this.selectedIds);
+                visible.forEach(p => current.add(p.product_id));
+                this.selectedIds = [...current];
+            }
+        },
+
+        async removeSelected() {
+            if (!confirm('Remove ' + this.selectedIds.length + ' product(s) from tracking?')) return;
+            const toRemove = [...this.selectedIds];
+            for (const id of toRemove) {
+                await fetch('/api/tracked/remove', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({product_id: id})
+                });
+            }
+            this.products = this.products.filter(p => !toRemove.includes(p.product_id));
+            this.selectedIds = [];
         },
 
         sortVal(row, col) {
