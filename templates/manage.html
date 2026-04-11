@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}Manage Products - TCGplayer Tracker{% endblock %}
+
+{% block head %}
+<style>
+    textarea { font-family: monospace; min-height: 300px; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; }
+    .badge-tracked { background: #22c55e33; color: #22c55e; }
+    .badge-count { background: var(--pico-secondary-background); padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }
+    .search-results, .tracked-list { max-height: 500px; overflow-y: auto; }
+    .product-row { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--pico-muted-border-color); }
+    .product-row:hover { background: var(--pico-card-background-color); }
+    .product-info { flex: 1; min-width: 0; }
+    .product-name { font-weight: 500; }
+    .product-meta { font-size: 0.75rem; opacity: 0.6; }
+    .product-row button { margin: 0; padding: 0.2rem 0.6rem; font-size: 0.75rem; width: auto; }
+    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    details { margin-top: 2rem; }
+    summary { cursor: pointer; font-weight: 600; }
+    #catalog-refresh-status { font-size: 0.8rem; opacity: 0.8; }
+    .empty-state { text-align: center; padding: 2rem; opacity: 0.5; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section-header">
+    <h3 style="margin:0;">Manage Products</h3>
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+        <span class="badge-count"><span id="tracked-count">{{ tracked_count }}</span> tracked</span>
+        <span class="badge-count">{{ catalog_count }} in catalog</span>
+        <button id="refresh-btn" onclick="refreshCatalog()" class="outline" style="margin:0;padding:0.3rem 0.6rem;font-size:0.8rem;">Refresh Catalog</button>
+        <span id="catalog-refresh-status"></span>
+    </div>
+</div>
+
+{% if request.args.get('saved') %}
+<p style="color: #22c55e;">Product list saved.</p>
+{% endif %}
+
+<h4>Search Catalog</h4>
+<input type="search" id="catalog-search" placeholder="Search {{ catalog_count }} products by name, set, or ID..." autocomplete="off" style="margin-bottom:0.5rem;">
+<div class="search-results" id="search-results">
+    <div class="empty-state">Type to search the product catalog</div>
+</div>
+
+<h4 style="margin-top:1.5rem;">Tracked Products <small style="opacity:0.6;" id="tracked-label">({{ tracked_count }})</small></h4>
+<div class="tracked-list" id="tracked-list">
+    <div class="empty-state">Loading...</div>
+</div>
+
+<details>
+    <summary>Advanced: Edit Raw Product List</summary>
+    <p style="margin-top:0.5rem;">One product ID or URL per line, or comma-separated. Lines starting with # are comments.</p>
+    <form method="post" action="/manage">
+        <textarea name="content" id="products-text">{{ content }}</textarea>
+        <button type="submit">Save</button>
+    </form>
+</details>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Local set of tracked IDs for instant UI updates
+    const trackedIds = new Set();
+
+    // --- Search ---
+    let searchTimeout;
+    const searchInput = document.getElementById('catalog-search');
+    const searchResults = document.getElementById('search-results');
+
+    searchInput.addEventListener('input', () => {
+        clearTimeout(searchTimeout);
+        const q = searchInput.value.trim();
+        if (!q) {
+            searchResults.innerHTML = '<div class="empty-state">Type to search the product catalog</div>';
+            return;
+        }
+        searchTimeout = setTimeout(() => searchCatalog(q), 300);
+    });
+
+    function searchCatalog(query) {
+        fetch(`/api/catalog/search?q=${encodeURIComponent(query)}`)
+            .then(r => r.json())
+            .then(results => {
+                if (!results.length) {
+                    searchResults.innerHTML = '<div class="empty-state">No results found</div>';
+                    return;
+                }
+                searchResults.innerHTML = results.map(r => `
+                    <div class="product-row" id="search-${r.product_id}">
+                        <div class="product-info">
+                            <div class="product-name">${esc(r.name)}</div>
+                            <div class="product-meta">${esc(r.group_name)} | ID: ${r.product_id}</div>
+                        </div>
+                        ${trackedIds.has(r.product_id) || r.is_tracked
+                            ? `<span class="badge badge-tracked">Tracked</span>`
+                            : `<button class="outline" onclick="addProduct('${r.product_id}')">Add</button>`
+                        }
+                    </div>
+                `).join('');
+            });
+    }
+
+    // --- Add / Remove ---
+    function addProduct(productId) {
+        fetch('/api/tracked/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({product_id: productId})
+        })
+        .then(r => r.json())
+        .then(data => {
+            trackedIds.add(productId);
+            updateTrackedCount();
+            // Update search result button
+            const el = document.getElementById(`search-${productId}`);
+            if (el) {
+                const btn = el.querySelector('button');
+                if (btn) {
+                    btn.outerHTML = '<span class="badge badge-tracked">Tracked</span>';
+                }
+            }
+            // Reload tracked list
+            loadTrackedProducts();
+        });
+    }
+
+    function removeProduct(productId) {
+        fetch('/api/tracked/remove', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({product_id: productId})
+        })
+        .then(r => r.json())
+        .then(data => {
+            trackedIds.delete(productId);
+            updateTrackedCount();
+            // Remove from tracked list
+            const el = document.getElementById(`tracked-${productId}`);
+            if (el) el.remove();
+            // Update search result if visible
+            const searchEl = document.getElementById(`search-${productId}`);
+            if (searchEl) {
+                const badge = searchEl.querySelector('.badge-tracked');
+                if (badge) {
+                    badge.outerHTML = `<button class="outline" onclick="addProduct('${productId}')">Add</button>`;
+                }
+            }
+        });
+    }
+
+    // --- Tracked List ---
+    function loadTrackedProducts() {
+        fetch('/api/tracked')
+            .then(r => r.json())
+            .then(products => {
+                trackedIds.clear();
+                products.forEach(p => trackedIds.add(p.product_id));
+                updateTrackedCount();
+
+                const list = document.getElementById('tracked-list');
+                if (!products.length) {
+                    list.innerHTML = '<div class="empty-state">No tracked products. Search above to add some.</div>';
+                    return;
+                }
+                list.innerHTML = products.map(p => `
+                    <div class="product-row" id="tracked-${p.product_id}">
+                        <div class="product-info">
+                            <div class="product-name">${p.name ? esc(p.name) : `Unknown (${p.product_id})`}</div>
+                            <div class="product-meta">${p.group_name ? esc(p.group_name) + ' | ' : ''}ID: ${p.product_id}</div>
+                        </div>
+                        <button class="outline" style="color:#ef4444;border-color:#ef4444;" onclick="removeProduct('${p.product_id}')">Remove</button>
+                    </div>
+                `).join('');
+            });
+    }
+
+    function updateTrackedCount() {
+        document.getElementById('tracked-count').textContent = trackedIds.size;
+        document.getElementById('tracked-label').textContent = `(${trackedIds.size})`;
+    }
+
+    // --- Catalog Refresh ---
+    function refreshCatalog() {
+        fetch('/api/catalog/refresh', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) { alert(data.error); return; }
+                document.getElementById('refresh-btn').disabled = true;
+                pollCatalogRefresh();
+            });
+    }
+
+    function pollCatalogRefresh() {
+        fetch('/api/catalog/refresh/status')
+            .then(r => r.json())
+            .then(data => {
+                const el = document.getElementById('catalog-refresh-status');
+                const btn = document.getElementById('refresh-btn');
+                if (data.running) {
+                    el.textContent = `[${data.current}/${data.total}] ${data.last_group}`;
+                    btn.disabled = true;
+                    setTimeout(pollCatalogRefresh, 1000);
+                } else if (data.total > 0) {
+                    el.textContent = data.last_group;
+                    btn.disabled = false;
+                    setTimeout(() => { el.textContent = ''; }, 5000);
+                } else {
+                    el.textContent = '';
+                    btn.disabled = false;
+                }
+            });
+    }
+
+    // --- Helpers ---
+    function esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
+    }
+
+    // --- Init ---
+    loadTrackedProducts();
+    // Check if catalog refresh is running
+    fetch('/api/catalog/refresh/status').then(r => r.json()).then(data => {
+        if (data.running) {
+            document.getElementById('refresh-btn').disabled = true;
+            pollCatalogRefresh();
+        }
+    });
+</script>
+{% endblock %}

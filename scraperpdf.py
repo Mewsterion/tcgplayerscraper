@@ -4,9 +4,12 @@
 # To fix this, please run the following command in your terminal before running the script:
 # pip install setuptools
 
+import argparse
 import json
 import time
 import re
+import random
+import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -22,9 +25,61 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 from fpdf import FPDF, XPos, YPos
 
-URLS = [
-    'https://www.tcgplayer.com/product/624679/'
+PRODUCTS_FILE = 'products.txt'
+DB_FILE = 'tcgplayer.db'
+DEFAULT_PDF_OUTPUT = 'TCGplayer_Combo_Report.pdf'
+
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _db_path():
+    return os.path.join(_BASE_DIR, DB_FILE)
+
+
+_HISTORY_SELECT = '''SELECT date as Date, market_price as "Market Price", most_recent_sale as "Most Recent Sale",
+    listed_median as "Listed Median", current_quantity as "Current Quantity",
+    current_sellers as "Current Sellers", sold_yesterday as "Sold Yesterday",
+    total_sold as "Total Sold", recent_sales as "Recent Sales", top_listings as "Top Listings",
+    price_change as "Price Change", quantity_change as "Quantity Change",
+    daily_sales as "Daily Sales"
+FROM price_history WHERE product_id = ? ORDER BY id'''
+
+# Fallback list used when products.txt does not exist
+PRODUCTS = [
+    624679,
+    668496,
+    672394,
+    528038,
+    593355,
+    600518,
+    654213,
+    502000,
+    247646,
+    654137,
+    # Accepts product IDs (e.g. 624679) or full URLs (e.g. 'https://www.tcgplayer.com/product/624679/')
 ]
+
+
+def load_products():
+    """Load products from PRODUCTS_FILE if it exists, otherwise use the hardcoded PRODUCTS list.
+    Supports one entry per line, comma-separated entries, or a mix of both.
+    Lines starting with # are ignored."""
+    path = os.path.join(_BASE_DIR, PRODUCTS_FILE)
+    if not os.path.isfile(path):
+        return PRODUCTS
+    entries = []
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            for part in line.split(','):
+                part = part.strip()
+                if part:
+                    entries.append(part)
+    if not entries:
+        return PRODUCTS
+    return entries
 
 # Number of recent sales / top listings to store per product
 RECENT_SALES_COUNT = 10
@@ -34,8 +89,32 @@ LISTING_COUNT = 6
 # product — accessories, loose packs, opened shells, foreign variants, etc.
 MIN_LISTING_PRICE_PCT = 0.50
 
+# Rate limiting
+DELAY_BETWEEN_REQUESTS = (2, 4)   # random delay range in seconds between scrapes
+RETRY_ATTEMPTS = 2                 # number of retries on failure
+RETRY_BACKOFF = 10                 # seconds to wait before first retry (doubles each attempt)
+SESSION_ROTATE_EVERY = 50          # restart Chrome every N products
+
+_UNICODE_REPLACEMENTS = {
+    '\u2019': "'", '\u2018': "'",
+    '\u201c': '"', '\u201d': '"',
+    '\u2013': '-', '\u2014': '-',
+    '\u2026': '...',
+}
+
+
+def _sanitize_for_pdf(text):
+    """Replace Unicode characters that Helvetica/Latin-1 can't render with ASCII equivalents."""
+    for old, new in _UNICODE_REPLACEMENTS.items():
+        text = text.replace(old, new)
+    return text.encode('latin-1', errors='replace').decode('latin-1')
+
 
 class PDF(FPDF):
+    def normalize_text(self, text):
+        text = _sanitize_for_pdf(text)
+        return super().normalize_text(text)
+
     def header(self):
         self.set_font('Helvetica', 'B', 12)
         self.cell(0, 10, 'TCGplayer Daily Market Report', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
@@ -47,9 +126,16 @@ class PDF(FPDF):
         self.cell(0, 10, f'Page {self.page_no()}', align='C')
 
 
-def extract_product_id(url):
-    m = re.search(r'/product/(\d+)', url)
-    return m.group(1) if m else None
+def normalize_product(entry):
+    """Accept a product ID (int or str) or a full TCGplayer URL.
+    Returns (product_id, url) tuple."""
+    s = str(entry).strip().rstrip('/')
+    if s.isdigit():
+        return s, f'https://www.tcgplayer.com/product/{s}/'
+    m = re.search(r'/product/(\d+)', s)
+    if m:
+        return m.group(1), entry if isinstance(entry, str) else str(entry)
+    return None, entry
 
 
 def get_api_data_from_network_logs(driver, product_id):
@@ -386,12 +472,11 @@ def parse_recent_sales_response(api_response):
     return sales
 
 
-def scrape_product_data(url, driver):
+def scrape_product_data(product_id, url, driver):
     """
     Scrapes a TCGplayer product page. Tries multiple strategies to get recent sales.
     """
     try:
-        product_id = extract_product_id(url)
         driver.get(url)
         wait = WebDriverWait(driver, 30)
         wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "section.product-details__price-guide")))
@@ -546,15 +631,39 @@ def scrape_product_data(url, driver):
         return None, None
 
 
-def update_data(product_name, new_data):
+def init_db():
+    """Create the price_history table if it doesn't exist."""
+    conn = sqlite3.connect(_db_path())
+    conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        date TEXT NOT NULL,
+        market_price TEXT,
+        most_recent_sale TEXT,
+        listed_median TEXT,
+        current_quantity TEXT,
+        current_sellers TEXT,
+        sold_yesterday TEXT,
+        total_sold TEXT,
+        recent_sales TEXT,
+        top_listings TEXT,
+        price_change REAL DEFAULT 0.0,
+        quantity_change REAL DEFAULT 0.0,
+        daily_sales REAL DEFAULT 0.0
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_product_id ON price_history(product_id)')
+    conn.commit()
+    conn.close()
+
+
+def update_data(product_id, product_name, new_data):
     """
-    Append new data to the product CSV and compute day-over-day changes.
+    Append new data to the SQLite database and compute day-over-day changes.
+    Returns a DataFrame of the product's full history.
     """
     if not new_data or not product_name:
         return None
-
-    safe_name = "".join(c for c in product_name if c.isalnum() or c in (' ', '_')).rstrip()
-    csv_file = f"{safe_name}.csv"
 
     new_data['Price Change'] = 0.0
     new_data['Quantity Change'] = 0.0
@@ -563,30 +672,135 @@ def update_data(product_name, new_data):
     def to_num(val):
         return pd.to_numeric(str(val).replace('$', '').replace(',', ''), errors='coerce')
 
-    if os.path.exists(csv_file):
-        df_old = pd.read_csv(csv_file)
-        if not df_old.empty:
-            last = df_old.iloc[-1]
+    conn = sqlite3.connect(_db_path())
 
-            last_price, new_price = to_num(last.get('Market Price', 0)), to_num(new_data['Market Price'])
-            if pd.notna(last_price) and pd.notna(new_price):
-                new_data['Price Change'] = new_price - last_price
+    # Get previous row for day-over-day calculations
+    prev = conn.execute(
+        'SELECT market_price, current_quantity, total_sold FROM price_history WHERE product_id = ? ORDER BY id DESC LIMIT 1',
+        (str(product_id),)
+    ).fetchone()
 
-            last_qty, new_qty = to_num(last.get('Current Quantity', 0)), to_num(new_data['Current Quantity'])
-            if pd.notna(last_qty) and pd.notna(new_qty):
-                new_data['Quantity Change'] = new_qty - last_qty
+    if prev:
+        last_price, new_price = to_num(prev[0]), to_num(new_data['Market Price'])
+        if pd.notna(last_price) and pd.notna(new_price):
+            new_data['Price Change'] = new_price - last_price
 
-            last_sold = to_num(last.get('Total Sold', 0))
-            new_sold = to_num(new_data.get('Total Sold', 0))
-            if pd.notna(last_sold) and pd.notna(new_sold) and new_sold >= last_sold:
-                new_data['Daily Sales'] = new_sold - last_sold
+        last_qty, new_qty = to_num(prev[1]), to_num(new_data['Current Quantity'])
+        if pd.notna(last_qty) and pd.notna(new_qty):
+            new_data['Quantity Change'] = new_qty - last_qty
 
-        df_combined = pd.concat([df_old, pd.DataFrame([new_data])], ignore_index=True)
-    else:
-        df_combined = pd.DataFrame([new_data])
+        last_sold, new_sold = to_num(prev[2]), to_num(new_data.get('Total Sold', 0))
+        if pd.notna(last_sold) and pd.notna(new_sold) and new_sold >= last_sold:
+            new_data['Daily Sales'] = new_sold - last_sold
 
-    df_combined.to_csv(csv_file, index=False)
-    return df_combined
+    conn.execute(
+        '''INSERT INTO price_history
+           (product_id, product_name, date, market_price, most_recent_sale, listed_median,
+            current_quantity, current_sellers, sold_yesterday, total_sold,
+            recent_sales, top_listings, price_change, quantity_change, daily_sales)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (
+            str(product_id),
+            product_name,
+            new_data['Date'],
+            new_data['Market Price'],
+            new_data['Most Recent Sale'],
+            new_data['Listed Median'],
+            new_data['Current Quantity'],
+            new_data['Current Sellers'],
+            new_data['Sold Yesterday'],
+            new_data['Total Sold'],
+            new_data.get('Recent Sales', '[]'),
+            new_data.get('Top Listings', '[]'),
+            new_data['Price Change'],
+            new_data['Quantity Change'],
+            new_data['Daily Sales'],
+        )
+    )
+    conn.commit()
+
+    df = pd.read_sql_query(_HISTORY_SELECT, conn, params=(str(product_id),))
+    conn.close()
+    return df
+
+
+def get_all_latest_from_db():
+    """Return a list of dicts with the latest row per product_id."""
+    conn = sqlite3.connect(_db_path())
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute('''
+        SELECT p.product_id, p.product_name, p.date, p.market_price, p.most_recent_sale,
+               p.listed_median, p.current_quantity, p.current_sellers, p.total_sold,
+               p.top_listings, p.price_change, p.quantity_change, p.daily_sales
+        FROM price_history p
+        INNER JOIN (
+            SELECT product_id, MAX(id) as max_id
+            FROM price_history GROUP BY product_id
+        ) latest ON p.id = latest.max_id
+        ORDER BY p.product_name
+    ''').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_product_history(product_id):
+    """Return full history DataFrame for a single product."""
+    conn = sqlite3.connect(_db_path())
+    df = pd.read_sql_query(_HISTORY_SELECT, conn, params=(str(product_id),))
+    conn.close()
+    return df
+
+
+def get_product_detail(product_id):
+    """Return the latest row for a single product as a dict, or None."""
+    conn = sqlite3.connect(_db_path())
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        'SELECT * FROM price_history WHERE product_id = ? ORDER BY id DESC LIMIT 1',
+        (str(product_id),)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def generate_pdf_from_db(output_path=None):
+    """Generate the PDF report from existing DB data without scraping."""
+    conn = sqlite3.connect(_db_path())
+    conn.row_factory = sqlite3.Row
+
+    # Get distinct product IDs
+    rows = conn.execute('''
+        SELECT p.product_id, p.product_name FROM price_history p
+        INNER JOIN (
+            SELECT product_id, MAX(id) as max_id
+            FROM price_history GROUP BY product_id
+        ) latest ON p.id = latest.max_id
+        ORDER BY p.product_name
+    ''').fetchall()
+
+    if not rows:
+        conn.close()
+        print("No data in database.")
+        return None
+
+    # Load all history in one connection
+    all_products_data = []
+    for row in rows:
+        pid = row['product_id']
+        name = _sanitize_for_pdf(row['product_name'])
+        df = pd.read_sql_query(_HISTORY_SELECT, conn, params=(str(pid),))
+        if df is not None and not df.empty:
+            all_products_data.append({
+                'name': name,
+                'latest': df.iloc[-1].to_dict(),
+                'history': df
+            })
+    conn.close()
+
+    if all_products_data:
+        create_combo_pdf_report(all_products_data, output_path=output_path)
+        return True
+    return None
 
 
 def _compute_avg_recent_sale(recent_sales_json):
@@ -606,7 +820,7 @@ def _compute_avg_recent_sale(recent_sales_json):
         return None
 
 
-def create_combo_pdf_report(all_products_data):
+def create_combo_pdf_report(all_products_data, output_path=None):
     """Generate the combined PDF report."""
     if not all_products_data:
         print("No data collected.")
@@ -841,11 +1055,13 @@ def create_combo_pdf_report(all_products_data):
         pdf.image(chart_path, x=None, y=None, w=190)
         os.remove(chart_path)
 
-    pdf.output("TCGplayer_Combo_Report.pdf")
-    print("Report generated: TCGplayer_Combo_Report.pdf")
+    out = output_path or DEFAULT_PDF_OUTPUT
+    pdf.output(out)
+    print(f"Report generated: {out}")
 
 
-if __name__ == '__main__':
+def create_driver():
+    """Create and return a fresh Chrome driver with CDP network tracking."""
     options = webdriver.ChromeOptions()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
@@ -855,36 +1071,113 @@ if __name__ == '__main__':
     options.add_experimental_option('excludeSwitches', ['enable-logging'])
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
     options.add_argument('--window-size=1920,1080')
-
-    # Performance logging captures all XHR/fetch network activity — needed for sales API interception
     options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-
     driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-
-    # Enable network tracking via CDP before any navigation
+    driver.set_page_load_timeout(60)
     driver.execute_cdp_cmd('Network.enable', {})
+    return driver
 
+
+def scrape_with_retry(product_id, url, driver):
+    """Attempt to scrape a product, retrying with backoff on failure."""
+    for attempt in range(1 + RETRY_ATTEMPTS):
+        name, data = scrape_product_data(product_id, url, driver)
+        if data and name and name != "Unknown Product":
+            return name, data
+        if attempt < RETRY_ATTEMPTS:
+            wait = RETRY_BACKOFF * (2 ** attempt)
+            print(f"  ↻ Retry {attempt + 1}/{RETRY_ATTEMPTS} in {wait}s...")
+            time.sleep(wait)
+    return None, None
+
+
+def run_scrape(progress_callback=None, generate_pdf=True):
+    """Run the full scrape pipeline. Returns (succeeded_count, failed_list).
+
+    progress_callback: optional callable(current, total, product_name) for live status updates.
+    generate_pdf: if True, generate the PDF report after scraping.
+    """
+    init_db()
+    products = load_products()
+    total = len(products)
+    print(f"Loaded {total} products")
+
+    driver = create_driver()
     all_products_data = []
+    failed = []
 
     try:
-        for url in URLS:
-            print(f"\nScraping: {url}")
-            name, data = scrape_product_data(url, driver)
+        for i, entry in enumerate(products, 1):
+            product_id, url = normalize_product(entry)
+            if product_id is None:
+                print(f"\n[{i}/{total}]  ✗ Could not parse product: {entry}")
+                if progress_callback:
+                    progress_callback(i, total, f"Skipped: {entry}")
+                continue
 
-            if data and name and name != "Unknown Product":
-                df = update_data(name, data)
+            print(f"\n[{i}/{total}] Scraping: {url}")
+            if progress_callback:
+                progress_callback(i, total, f"Scraping {product_id}...")
+            name, data = scrape_with_retry(product_id, url, driver)
+
+            if data and name:
+                df = update_data(product_id, name, data)
                 if df is not None and not df.empty:
                     all_products_data.append({
-                        'name': name,
+                        'name': _sanitize_for_pdf(name),
                         'latest': df.iloc[-1].to_dict(),
                         'history': df
                     })
+                if progress_callback:
+                    progress_callback(i, total, name)
             else:
                 print(f"  ✗ Failed: {url}")
+                failed.append(entry)
+                if progress_callback:
+                    progress_callback(i, total, f"Failed: {product_id}")
             print("-" * 40)
 
-        if all_products_data:
+            # Session rotation
+            if i % SESSION_ROTATE_EVERY == 0 and i < total:
+                print(f"\n--- Rotating Chrome session (after {i} products) ---")
+                driver.quit()
+                time.sleep(3)
+                driver = create_driver()
+
+            # Delay between requests
+            if i < total:
+                delay = random.uniform(*DELAY_BETWEEN_REQUESTS)
+                time.sleep(delay)
+
+        if generate_pdf and all_products_data:
             create_combo_pdf_report(all_products_data)
+
+        print(f"\nDone: {len(all_products_data)} succeeded, {len(failed)} failed")
+        if failed:
+            print(f"Failed products: {failed}")
+
+        return len(all_products_data), failed
 
     finally:
         driver.quit()
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='TCGplayer Price Tracker')
+    parser.add_argument('--serve', action='store_true', help='Start the web interface')
+    parser.add_argument('--port', type=int, default=5000, help='Port for the web interface (default: 5000)')
+    parser.add_argument('--pdf', action='store_true', help='Generate PDF from existing DB data without scraping')
+    args = parser.parse_args()
+
+    init_db()
+
+    if args.serve:
+        from web import create_app
+        app = create_app()
+        app.run(debug=True, port=args.port)
+    elif args.pdf:
+        result = generate_pdf_from_db()
+        if not result:
+            print("No data in database. Run a scrape first.")
+    else:
+        run_scrape()

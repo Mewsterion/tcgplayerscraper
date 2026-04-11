@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}TCGplayer Tracker{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <style>
+        :root { --pico-font-size: 90%; }
+        nav { padding: 0.5rem 1rem; }
+        .actions { display: flex; gap: 0.5rem; align-items: center; }
+        .actions button, .actions a { margin: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem; }
+        #scrape-status { font-size: 0.8rem; opacity: 0.8; }
+        table { font-size: 0.85rem; }
+        .positive { color: #22c55e; }
+        .negative { color: #ef4444; }
+        .neutral { color: #a1a1aa; }
+        main { padding: 0 1rem 2rem; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav>
+        <ul>
+            <li><strong><a href="/" style="text-decoration:none;">TCGplayer Tracker</a></strong></li>
+        </ul>
+        <ul>
+            <li><a href="/">Dashboard</a></li>
+            <li><a href="/manage">Manage Products</a></li>
+        </ul>
+        <ul>
+            <li class="actions">
+                <a href="/api/pdf" role="button" class="outline">Download PDF</a>
+                <button id="scrape-btn" onclick="startScrape()">Run Scrape</button>
+                <span id="scrape-status"></span>
+            </li>
+        </ul>
+    </nav>
+    <main class="container-fluid">
+        {% block content %}{% endblock %}
+    </main>
+    <script>
+        function startScrape() {
+            fetch('/api/scrape', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) { alert(data.error); return; }
+                    document.getElementById('scrape-btn').disabled = true;
+                    pollScrapeStatus();
+                });
+        }
+
+        function pollScrapeStatus() {
+            fetch('/api/scrape/status')
+                .then(r => r.json())
+                .then(data => {
+                    const el = document.getElementById('scrape-status');
+                    const btn = document.getElementById('scrape-btn');
+                    if (data.running) {
+                        el.textContent = `[${data.current}/${data.total}] ${data.last_product}`;
+                        btn.disabled = true;
+                        setTimeout(pollScrapeStatus, 2000);
+                    } else if (data.total > 0) {
+                        el.textContent = `Done: ${data.succeeded} succeeded, ${data.failed.length} failed`;
+                        btn.disabled = false;
+                    } else {
+                        el.textContent = '';
+                        btn.disabled = false;
+                    }
+                });
+        }
+
+        // Check on page load if a scrape is running
+        fetch('/api/scrape/status').then(r => r.json()).then(data => {
+            if (data.running) {
+                document.getElementById('scrape-btn').disabled = true;
+                pollScrapeStatus();
+            }
+        });
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

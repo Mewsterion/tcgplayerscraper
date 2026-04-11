@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - TCGplayer Tracker{% endblock %}
+
+{% block content %}
+<h3>Dashboard <small style="opacity:0.6">({{ products|length }} products)</small></h3>
+
+<form method="get" action="/" style="display:flex; gap:0.5rem; margin-bottom:1rem; max-width:400px;">
+    <input type="search" name="q" value="{{ query }}" placeholder="Search products..." style="margin:0;">
+    <button type="submit" style="margin:0; width:auto;">Search</button>
+</form>
+
+{% if products %}
+<figure style="overflow-x:auto;">
+<table role="grid">
+    <thead>
+        <tr>
+            <th>Product</th>
+            <th style="text-align:right">Market $</th>
+            <th style="text-align:right">Low Ask</th>
+            <th style="text-align:right">Last Sale</th>
+            <th style="text-align:right">Change</th>
+            <th style="text-align:right">Qty</th>
+            <th style="text-align:right">Total Sold</th>
+            <th>Date</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for p in products %}
+        <tr style="cursor:pointer;" onclick="window.location='/product/{{ p.product_id }}'">
+            <td>{{ p.product_name }}</td>
+            <td style="text-align:right">{{ p.market_price or 'N/A' }}</td>
+            <td style="text-align:right">{{ "$%.2f"|format(p.lowest_ask) if p.lowest_ask else 'N/A' }}</td>
+            <td style="text-align:right">{{ p.most_recent_sale or 'N/A' }}</td>
+            <td style="text-align:right">
+                {% if p.price_change and p.price_change > 0 %}
+                    <span class="positive">+{{ "%.2f"|format(p.price_change) }}</span>
+                {% elif p.price_change and p.price_change < 0 %}
+                    <span class="negative">{{ "%.2f"|format(p.price_change) }}</span>
+                {% else %}
+                    <span class="neutral">0.00</span>
+                {% endif %}
+            </td>
+            <td style="text-align:right">{{ p.current_quantity or 'N/A' }}</td>
+            <td style="text-align:right">{{ p.total_sold or 'N/A' }}</td>
+            <td>{{ p.date }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% else %}
+<p>No products found. {% if query %}Try a different search, or {% endif %}<a href="/manage">add some product IDs</a> and run a scrape.</p>
+{% endif %}
+{% endblock %}

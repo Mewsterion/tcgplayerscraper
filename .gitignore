@@ -38,5 +38,6 @@ ENV/
 *.pdf
 *.png
 *.csv
+*.db
 scraper_log.txt
 urls.txt

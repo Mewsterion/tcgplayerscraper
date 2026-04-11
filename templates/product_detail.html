@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}{{ product.product_name }} - TCGplayer Tracker{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .stat-card { background: var(--pico-card-background-color); padding: 0.75rem; border-radius: var(--pico-border-radius); }
+    .stat-card .label { font-size: 0.75rem; opacity: 0.7; }
+    .stat-card .value { font-size: 1.2rem; font-weight: bold; }
+    .detail-table { font-size: 0.8rem; }
+    .detail-table td, .detail-table th { padding: 0.3rem 0.5rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<p><a href="/">&larr; Back to Dashboard</a></p>
+<h3>{{ product.product_name }}</h3>
+<p style="opacity:0.6;">Product ID: {{ product.product_id }} | Last updated: {{ product.date }}</p>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="label">Market Price</div>
+        <div class="value">{{ product.market_price or 'N/A' }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Price Change</div>
+        <div class="value {% if product.price_change and product.price_change > 0 %}positive{% elif product.price_change and product.price_change < 0 %}negative{% endif %}">
+            {% if product.price_change %}{{ "%.2f"|format(product.price_change) }}{% else %}0.00{% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Most Recent Sale</div>
+        <div class="value">{{ product.most_recent_sale or 'N/A' }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Listed Median</div>
+        <div class="value">{{ product.listed_median or 'N/A' }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Quantity</div>
+        <div class="value">{{ product.current_quantity or 'N/A' }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Total Sold</div>
+        <div class="value">{{ product.total_sold or 'N/A' }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Sellers</div>
+        <div class="value">{{ product.current_sellers or 'N/A' }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Daily Sales</div>
+        <div class="value">{{ "%.0f"|format(product.daily_sales) if product.daily_sales else '0' }}</div>
+    </div>
+</div>
+
+{% if history|length > 1 %}
+<h4>Price History</h4>
+<canvas id="priceChart" style="max-height:350px; margin-bottom:2rem;"></canvas>
+{% endif %}
+
+{% set recent_sales = product.recent_sales %}
+{% if recent_sales and recent_sales != '[]' %}
+<h4>Recent Sales</h4>
+<figure style="overflow-x:auto;">
+<table class="detail-table" role="grid">
+    <thead>
+        <tr><th>Date</th><th>Condition</th><th style="text-align:right">Price</th><th style="text-align:right">Qty</th></tr>
+    </thead>
+    <tbody id="sales-body"></tbody>
+</table>
+</figure>
+{% endif %}
+
+{% set top_listings = product.top_listings %}
+{% if top_listings and top_listings != '[]' %}
+<h4>Active Listings</h4>
+<figure style="overflow-x:auto;">
+<table class="detail-table" role="grid">
+    <thead>
+        <tr><th style="text-align:right">Price</th><th style="text-align:right">Qty</th><th>Condition</th><th>Seller</th><th>Status</th></tr>
+    </thead>
+    <tbody id="listings-body"></tbody>
+</table>
+</figure>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const history = {{ history|tojson }};
+    const recentSalesRaw = {{ product.recent_sales|tojson if product.recent_sales else '[]' }};
+    const topListingsRaw = {{ product.top_listings|tojson if product.top_listings else '[]' }};
+
+    // Price chart
+    if (history.length > 1) {
+        const labels = history.map(h => h['Date']);
+        const prices = history.map(h => {
+            const v = String(h['Market Price'] || '').replace('$', '').replace(',', '');
+            return parseFloat(v) || null;
+        });
+        const sales = history.map(h => {
+            const v = String(h['Most Recent Sale'] || '').replace('$', '').replace(',', '');
+            return parseFloat(v) || null;
+        });
+
+        new Chart(document.getElementById('priceChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    { label: 'Market Price', data: prices, borderColor: '#3b82f6', tension: 0.2, pointRadius: 2 },
+                    { label: 'Most Recent Sale', data: sales, borderColor: '#f59e0b', tension: 0.2, pointRadius: 2 },
+                ]
+            },
+            options: {
+                responsive: true,
+                interaction: { intersect: false, mode: 'index' },
+                scales: { y: { beginAtZero: false } },
+                plugins: { legend: { position: 'top' } }
+            }
+        });
+    }
+
+    // Recent sales table
+    try {
+        const sales = typeof recentSalesRaw === 'string' ? JSON.parse(recentSalesRaw) : recentSalesRaw;
+        const tbody = document.getElementById('sales-body');
+        if (tbody && sales.length) {
+            sales.forEach(s => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${s.date || ''}</td><td>${s.condition || ''}</td><td style="text-align:right">${s.price || ''}</td><td style="text-align:right">${s.qty || ''}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+    } catch(e) {}
+
+    // Listings table
+    try {
+        const listings = typeof topListingsRaw === 'string' ? JSON.parse(topListingsRaw) : topListingsRaw;
+        const tbody = document.getElementById('listings-body');
+        if (tbody && listings.length) {
+            listings.forEach(l => {
+                const status = l.direct ? 'Direct' : (l.verified ? 'Verified' : 'Standard');
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td style="text-align:right">${l.price || ''}</td><td style="text-align:right">${l.qty || ''}</td><td>${l.condition || ''}</td><td>${l.seller || ''}</td><td>${status}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+    } catch(e) {}
+</script>
+{% endblock %}
