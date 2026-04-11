@@ -588,6 +588,15 @@ def update_data(product_name, new_data):
             if pd.notna(last_sold) and pd.notna(new_sold) and new_sold >= last_sold:
                 new_data['Daily Sales'] = new_sold - last_sold
 
+    # Sell-through rate: units sold today / current listings quantity
+    daily = to_num(new_data.get('Daily Sales', 0))
+    qty = to_num(new_data.get('Current Quantity', 0))
+    if pd.notna(daily) and pd.notna(qty) and qty > 0:
+        new_data['Sell Through Rate'] = round((daily / qty) * 100, 1)
+    else:
+        new_data['Sell Through Rate'] = 0.0
+
+    if os.path.exists(csv_file):
         df_combined = pd.concat([df_old, pd.DataFrame([new_data])], ignore_index=True)
     else:
         df_combined = pd.DataFrame([new_data])
@@ -646,14 +655,15 @@ def create_combo_pdf_report(all_products_data):
 
     # Table header
     cols = [
-        (62, 'Product Name'),
-        (20, 'Market $'),
-        (20, 'Change'),
-        (18, 'Qty'),
-        (14, 'Qty Chg'),
-        (16, 'Sold/Day'),
-        (20, 'Avg Sale'),
-        (20, 'Low Ask'),
+        (58, 'Product Name'),
+        (18, 'Market $'),
+        (17, 'Change'),
+        (16, 'Qty'),
+        (12, 'Qty Chg'),
+        (14, 'Sold/Day'),
+        (18, 'Avg Sale'),
+        (18, 'Low Ask'),
+        (14, 'STR%'),
     ]
     pdf.set_font('Helvetica', 'B', 7)
     for w, txt in cols:
@@ -666,32 +676,37 @@ def create_combo_pdf_report(all_products_data):
     for prod in all_products_data:
         latest = prod['latest']
 
-        pdf.cell(62, 8, prod['name'][:44], 1)
-        pdf.cell(20, 8, str(latest.get('Market Price', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(58, 8, prod['name'][:42], 1)
+        pdf.cell(18, 8, str(latest.get('Market Price', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         pc = float(latest.get('Price Change', 0) or 0)
         pdf.set_text_color(34, 139, 34) if pc > 0 else (pdf.set_text_color(220, 20, 60) if pc < 0 else None)
-        pdf.cell(20, 8, f"{'+' if pc > 0 else ''}${pc:.2f}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(17, 8, f"{'+' if pc > 0 else ''}${pc:.2f}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
         pdf.set_text_color(0, 0, 0)
 
-        pdf.cell(18, 8, str(latest.get('Current Quantity', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(16, 8, str(latest.get('Current Quantity', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         qc = int(float(latest.get('Quantity Change', 0) or 0))
         pdf.set_text_color(34, 139, 34) if qc > 0 else (pdf.set_text_color(220, 20, 60) if qc < 0 else None)
-        pdf.cell(14, 8, f"{'+' if qc > 0 else ''}{qc}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(12, 8, f"{'+' if qc > 0 else ''}{qc}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
         pdf.set_text_color(0, 0, 0)
 
         ds = int(float(latest.get('Daily Sales', 0) or 0))
-        pdf.cell(16, 8, str(ds), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(14, 8, str(ds), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         avg = _compute_avg_recent_sale(latest.get('Recent Sales', '[]'))
         avg_str = f"${avg:.2f}" if avg is not None else 'N/A'
-        pdf.cell(20, 8, avg_str, 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(18, 8, avg_str, 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         listings = parse_listings_json(latest.get('Top Listings', '[]'))
         low_ask = lowest_listing_price(listings)
         low_ask_str = f"${low_ask:.2f}" if low_ask is not None else 'N/A'
-        pdf.cell(20, 8, low_ask_str, 1, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(18, 8, low_ask_str, 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
+
+        str_val = float(latest.get('Sell Through Rate', 0) or 0)
+        pdf.set_text_color(34, 139, 34) if str_val >= 10 else (pdf.set_text_color(220, 140, 0) if str_val >= 3 else None)
+        pdf.cell(14, 8, f"{str_val:.1f}%", 1, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_text_color(0, 0, 0)
 
     # --- Per-product detail pages ---
     for prod in all_products_data:
@@ -770,6 +785,7 @@ def create_combo_pdf_report(all_products_data):
             ('Sold Yesterday', latest.get('Sold Yesterday', 'N/A')),
             ('Total Sold', latest.get('Total Sold', 'N/A')),
             ('Daily Sales (calc)', int(float(latest.get('Daily Sales', 0) or 0))),
+            ('Sell Through Rate', f"{float(latest.get('Sell Through Rate', 0) or 0):.1f}%"),
         ]
 
         avg = _compute_avg_recent_sale(latest.get('Recent Sales', '[]'))
