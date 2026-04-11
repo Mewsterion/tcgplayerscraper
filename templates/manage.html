@@ -19,6 +19,13 @@
     summary { cursor: pointer; font-weight: 600; }
     #catalog-refresh-status { font-size: 0.8rem; opacity: 0.8; }
     .empty-state { text-align: center; padding: 2rem; opacity: 0.5; }
+    .filter-toggle { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .filter-toggle button {
+        margin: 0; padding: 0.3rem 0.7rem; font-size: 0.8rem; width: auto;
+    }
+    .filter-toggle button.active {
+        background: var(--pico-primary); border-color: var(--pico-primary); color: #fff;
+    }
 </style>
 {% endblock %}
 
@@ -38,7 +45,10 @@
 {% endif %}
 
 <h4>Search Catalog</h4>
-<input type="search" id="catalog-search" placeholder="Search {{ catalog_count }} products by name, set, or ID..." autocomplete="off" style="margin-bottom:0.5rem;">
+<div class="filter-toggle">
+    <input type="search" id="catalog-search" placeholder="Search {{ catalog_count }} products by name, set, or ID..." autocomplete="off" style="margin:0; flex:1;">
+    <button id="sealed-filter-btn" class="outline" onclick="toggleSealedFilter()">Sealed Only</button>
+</div>
 <div class="search-results" id="search-results">
     <div class="empty-state">Type to search the product catalog</div>
 </div>
@@ -62,6 +72,23 @@
 <script>
     // Local set of tracked IDs for instant UI updates
     const trackedIds = new Set();
+    let sealedOnly = false;
+
+    // --- Sealed Filter ---
+    function toggleSealedFilter() {
+        sealedOnly = !sealedOnly;
+        const btn = document.getElementById('sealed-filter-btn');
+        if (sealedOnly) {
+            btn.classList.remove('outline');
+            btn.classList.add('active');
+        } else {
+            btn.classList.add('outline');
+            btn.classList.remove('active');
+        }
+        // Re-run search if there's a query
+        const q = searchInput.value.trim();
+        if (q) searchCatalog(q);
+    }
 
     // --- Search ---
     let searchTimeout;
@@ -79,7 +106,9 @@
     });
 
     function searchCatalog(query) {
-        fetch(`/api/catalog/search?q=${encodeURIComponent(query)}`)
+        const params = new URLSearchParams({q: query});
+        if (sealedOnly) params.set('sealed', '1');
+        fetch(`/api/catalog/search?${params}`)
             .then(r => r.json())
             .then(results => {
                 if (!results.length) {

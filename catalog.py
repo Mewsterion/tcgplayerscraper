@@ -28,6 +28,19 @@ def _csv_path():
     return os.path.join(_base_dir, CSV_FILE)
 
 
+SINGLE_CARD_EXT_KEYS = {'Number', 'Rarity', 'Card Type', 'HP', 'Stage', 'Attack 1'}
+
+
+def _classify_product(ext_data):
+    """Classify a product as 'sealed' or 'single' based on its extendedData fields."""
+    if not ext_data:
+        return 'sealed'
+    ext_keys = {e['name'] for e in ext_data}
+    if ext_keys & SINGLE_CARD_EXT_KEYS:
+        return 'single'
+    return 'sealed'
+
+
 def _ssl_ctx():
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -41,8 +54,14 @@ def init_catalog_db():
         product_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         group_name TEXT,
-        url TEXT
+        url TEXT,
+        product_type TEXT DEFAULT 'sealed'
     )''')
+    # Add product_type column if upgrading from older schema
+    try:
+        conn.execute('ALTER TABLE product_catalog ADD COLUMN product_type TEXT DEFAULT "sealed"')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
@@ -61,9 +80,12 @@ def load_catalog_from_csv(csv_path=None):
     conn = sqlite3.connect(_db_path())
     with open(path, 'r', newline='') as f:
         reader = csv.DictReader(f)
-        rows = [(str(row['productId']), row['name'], row['groupName'], row['url']) for row in reader]
+        rows = []
+        for row in reader:
+            product_type = row.get('productType', 'sealed')
+            rows.append((str(row['productId']), row['name'], row['groupName'], row['url'], product_type))
     conn.executemany(
-        'INSERT OR REPLACE INTO product_catalog (product_id, name, group_name, url) VALUES (?, ?, ?, ?)',
+        'INSERT OR REPLACE INTO product_catalog (product_id, name, group_name, url, product_type) VALUES (?, ?, ?, ?, ?)',
         rows
     )
     conn.commit()
@@ -96,6 +118,7 @@ def refresh_catalog(progress_callback=None):
                     'name': p['name'],
                     'groupName': gname,
                     'url': p['url'],
+                    'productType': _classify_product(p.get('extendedData', [])),
                 })
         except Exception as e:
             print(f"  Error fetching group {gname}: {e}")
@@ -105,8 +128,8 @@ def refresh_catalog(progress_callback=None):
     conn = sqlite3.connect(_db_path())
     for p in all_products:
         conn.execute(
-            'INSERT OR REPLACE INTO product_catalog (product_id, name, group_name, url) VALUES (?, ?, ?, ?)',
-            (p['productId'], p['name'], p['groupName'], p['url'])
+            'INSERT OR REPLACE INTO product_catalog (product_id, name, group_name, url, product_type) VALUES (?, ?, ?, ?, ?)',
+            (p['productId'], p['name'], p['groupName'], p['url'], p['productType'])
         )
     conn.commit()
     conn.close()
@@ -114,31 +137,34 @@ def refresh_catalog(progress_callback=None):
     # Update CSV cache
     csv_path = _csv_path()
     with open(csv_path, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=['productId', 'name', 'groupName', 'url'])
+        w = csv.DictWriter(f, fieldnames=['productId', 'name', 'groupName', 'url', 'productType'])
         w.writeheader()
         w.writerows(all_products)
 
     return len(all_products)
 
 
-def search_catalog(query, limit=50):
+def search_catalog(query, limit=50, sealed_only=False):
     """Search catalog by name, group, or product ID. Returns results with is_tracked flag."""
     tracked = get_tracked_ids()
     conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
     q = f'%{query}%'
-    rows = conn.execute(
-        '''SELECT product_id, name, group_name, url FROM product_catalog
-           WHERE name LIKE ? OR group_name LIKE ? OR product_id LIKE ?
-           ORDER BY name LIMIT ?''',
-        (q, q, q, limit)
-    ).fetchall()
+    sql = '''SELECT product_id, name, group_name, url, product_type FROM product_catalog
+             WHERE (name LIKE ? OR group_name LIKE ? OR product_id LIKE ?)'''
+    params = [q, q, q]
+    if sealed_only:
+        sql += " AND product_type = 'sealed'"
+    sql += ' ORDER BY name LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
     conn.close()
     return [{
         'product_id': r['product_id'],
         'name': r['name'],
         'group_name': r['group_name'],
         'url': r['url'],
+        'product_type': r['product_type'],
         'is_tracked': r['product_id'] in tracked,
     } for r in rows]
 

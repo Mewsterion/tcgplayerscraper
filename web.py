@@ -194,7 +194,8 @@ def create_app():
         q = request.args.get("q", "").strip()
         if not q:
             return jsonify([])
-        results = catalog.search_catalog(q, limit=50)
+        sealed_only = request.args.get("sealed", "").lower() in ("1", "true")
+        results = catalog.search_catalog(q, limit=50, sealed_only=sealed_only)
         return jsonify(results)
 
     @app.route("/api/catalog/refresh", methods=["POST"])
