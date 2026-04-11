@@ -30,11 +30,23 @@ TCGplayer does not expose sales history or active listings in a public API. This
 1. **Sales data** — After the page loads, Chrome's performance logs are scanned for the `mpapi.tcgplayer.com/v2/product/{id}/latestsales` XHR response and the body is extracted directly.
 2. **Listings data** — TCGplayer's listing search API (`mp-search-api.tcgplayer.com`) requires a POST request with a filter body to return actual listing records (GET returns aggregations only). The script posts from the browser context so session cookies are included automatically.
 
+## Quick Start
+
+```bash
+git clone https://github.com/aaronentwistle/tcgplayerscraper.git
+cd tcgplayerscraper
+cp products.txt.example products.txt
+uv sync
+uv run python scraperpdf.py --serve
+```
+
+Then open http://127.0.0.1:5000 to browse the dashboard, search the product catalog, and add products to track.
+
 ## Setup & Installation
 
 ### 1. Prerequisites
 - Python 3.9 or newer
-- Google Chrome browser installed
+- Google Chrome browser installed (required for scraping -- the scraper will check and warn you if it's missing)
 
 ### 2. Clone the Repository
 ```bash
@@ -44,7 +56,7 @@ cd tcgplayerscraper
 
 ### 3. Install Required Libraries
 
-**With uv (recommended):**
+**With [uv](https://docs.astral.sh/uv/) (recommended):**
 ```bash
 uv sync
 ```
@@ -62,6 +74,15 @@ pip install pandas matplotlib beautifulsoup4 selenium webdriver-manager fpdf2 fl
 ```bash
 pip install setuptools
 ```
+
+### 4. Set Up Your Product List
+
+Copy the example file to get started:
+```bash
+cp products.txt.example products.txt
+```
+
+You can also skip this step and add products directly from the web UI's catalog search.
 
 ## Configuration
 

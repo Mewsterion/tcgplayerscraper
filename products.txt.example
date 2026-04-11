@@ -1,0 +1,12 @@
+# TCGplayer Product IDs to track
+# One ID or URL per line, or comma-separated. Lines starting with # are comments.
+#
+# Find product IDs on tcgplayer.com -- the number in the URL is the product ID:
+#   https://www.tcgplayer.com/product/624679/ --> 624679
+#
+# You can also use the web UI (--serve) to search and add products from the
+# built-in catalog of 31,000+ Pokemon TCG products.
+
+# Example sealed products:
+624679
+668496

@@ -43,5 +43,6 @@ CLAUDE.md
 *.png
 *.csv
 *.db
+products.txt
 scraper_log.txt
 urls.txt

@@ -6,6 +6,7 @@
 
 import argparse
 import json
+import shutil
 import time
 import re
 import random
@@ -13,6 +14,7 @@ import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import sys
 from datetime import datetime
 from bs4 import BeautifulSoup
 
@@ -1058,6 +1060,34 @@ def create_combo_pdf_report(all_products_data, output_path=None):
     print(f"Report generated: {out}")
 
 
+def check_chrome_installed():
+    """Check if Chrome is installed and print a helpful error if not."""
+    chrome_paths = {
+        'darwin': [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        ],
+        'win32': [
+            os.path.expandvars(r'%ProgramFiles%\Google\Chrome\Application\chrome.exe'),
+            os.path.expandvars(r'%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe'),
+            os.path.expandvars(r'%LocalAppData%\Google\Chrome\Application\chrome.exe'),
+        ],
+        'linux': [
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/chromium',
+        ],
+    }
+    platform = 'darwin' if sys.platform == 'darwin' else 'win32' if sys.platform == 'win32' else 'linux'
+    paths = chrome_paths.get(platform, [])
+    if any(os.path.isfile(p) for p in paths) or shutil.which('google-chrome') or shutil.which('chromium'):
+        return True
+    print("ERROR: Google Chrome is required for scraping but was not found.")
+    print("Install Chrome from: https://www.google.com/chrome/")
+    print("On Linux, you can also use: sudo apt install chromium-browser")
+    return False
+
+
 def create_driver():
     """Create and return a fresh Chrome driver with CDP network tracking."""
     options = webdriver.ChromeOptions()
@@ -1096,6 +1126,8 @@ def run_scrape(progress_callback=None, generate_pdf=True):
     generate_pdf: if True, generate the PDF report after scraping.
     """
     init_db()
+    if not check_chrome_installed():
+        return 0, []
     products = load_products()
     total = len(products)
     print(f"Loaded {total} products")
