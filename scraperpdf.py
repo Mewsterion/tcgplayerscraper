@@ -77,8 +77,6 @@ def load_products():
                 part = part.strip()
                 if part:
                     entries.append(part)
-    if not entries:
-        return PRODUCTS
     return entries
 
 # Number of recent sales / top listings to store per product
