@@ -23,7 +23,14 @@ from webdriver_manager.chrome import ChromeDriverManager
 from fpdf import FPDF, XPos, YPos
 
 URLS = [
-    'https://www.tcgplayer.com/product/624679/'
+    'https://www.tcgplayer.com/product/624679/',  # Destined Rivals Booster Box
+    'https://www.tcgplayer.com/product/623628/',  # Journey Together Enhanced Booster Box
+    'https://www.tcgplayer.com/product/565606/',  # Surging Sparks Booster Box
+    'https://www.tcgplayer.com/product/654137/',  # Phantasmal Flames Booster Box
+    'https://www.tcgplayer.com/product/609597/',  # Blooming Waters Premium Collection
+    'https://www.tcgplayer.com/product/665113/',  # Paldean Fates Great Tusk ex & Iron Treads ex Premium Collection
+    'https://www.tcgplayer.com/product/668632/',  # Unova Heavy Hitters Premium Collection
+    'https://www.tcgplayer.com/product/673436/',  # First Partner Illustration Collection (Series 1)
 ]
 
 # Number of recent sales / top listings to store per product
