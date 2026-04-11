@@ -23,28 +23,16 @@ from webdriver_manager.chrome import ChromeDriverManager
 from fpdf import FPDF, XPos, YPos
 
 URLS = [
-    'https://www.tcgplayer.com/product/624679/',
-    'https://www.tcgplayer.com/product/623628',
-    'https://www.tcgplayer.com/product/565606',
-    'https://www.tcgplayer.com/product/543846/',
-    'https://www.tcgplayer.com/product/493975/',
-    'https://www.tcgplayer.com/product/283389/',
-    'https://www.tcgplayer.com/product/618893/',
-    'https://www.tcgplayer.com/product/630686/',
-    'https://www.tcgplayer.com/product/630689/',
-    'https://www.tcgplayer.com/product/593324/',
-    'https://www.tcgplayer.com/product/502000/',
-    'https://www.tcgplayer.com/product/503313',
-    'https://www.tcgplayer.com/product/644300',
-    'https://www.tcgplayer.com/product/622770',
-    'https://www.tcgplayer.com/product/653892',
-    'https://www.tcgplayer.com/product/648365',
-    'https://www.tcgplayer.com/product/501999'
+    'https://www.tcgplayer.com/product/624679/'
 ]
 
 # Number of recent sales / top listings to store per product
 RECENT_SALES_COUNT = 10
 LISTING_COUNT = 6
+
+# Listings below this fraction of market price are almost certainly not the actual
+# product — accessories, loose packs, opened shells, foreign variants, etc.
+MIN_LISTING_PRICE_PCT = 0.50
 
 
 class PDF(FPDF):
@@ -77,22 +65,19 @@ def get_api_data_from_network_logs(driver, product_id):
         print(f"  → Performance log unavailable: {e}")
         return result
 
+    # NOTE: The listings endpoint (mp-search-api) only returns actual listing items
+    # via POST — GET requests return aggregation metadata only. So we only use
+    # the network log for sales here; listings are always fetched via JS POST.
     pid = str(product_id)
     for log in logs:
-        if result['sales'] and result['listings']:
+        if result['sales']:
             break
         try:
             message = json.loads(log['message'])['message']
             if message.get('method') != 'Network.responseReceived':
                 continue
             url = message.get('params', {}).get('response', {}).get('url', '')
-            if pid not in url:
-                continue
-
-            url_lower = url.lower()
-            want_sales = 'sales' in url_lower and not result['sales']
-            want_listings = 'listing' in url_lower and not result['listings']
-            if not want_sales and not want_listings:
+            if pid not in url or 'sales' not in url.lower():
                 continue
 
             req_id = message['params']['requestId']
@@ -102,12 +87,8 @@ def get_api_data_from_network_logs(driver, product_id):
                 continue
             data = json.loads(body_text)
             if data:
-                if want_sales:
-                    print(f"  → Sales via network log: {url}")
-                    result['sales'] = data
-                elif want_listings:
-                    print(f"  → Listings via network log: {url}")
-                    result['listings'] = data
+                print(f"  → Sales via network log: {url}")
+                result['sales'] = data
         except Exception:
             continue
 
@@ -116,35 +97,34 @@ def get_api_data_from_network_logs(driver, product_id):
 
 def get_listings_via_js(driver, product_id):
     """
-    Try to fetch active listings from TCGplayer's internal API using browser context.
-    Listings are sorted lowest price first by default.
+    POST to TCGplayer's search API to retrieve active listing records.
+    GET requests to this endpoint only return aggregation metadata — POST is required.
+    Requests more than needed so the English filter has enough to work with after filtering.
     """
-    endpoints = [
-        f'/api/product/{product_id}/listings?rows={LISTING_COUNT}&sellerStatus=Live&channel=0&minCondition=7',
-        f'/api/v2/product/{product_id}/listings?rows={LISTING_COUNT}&sellerStatus=Live',
-        f'/api/catalog/product/{product_id}/listings?rows={LISTING_COUNT}',
-    ]
-    for endpoint in endpoints:
-        try:
-            result = driver.execute_async_script("""
-                const [url, callback] = [arguments[0], arguments[arguments.length - 1]];
-                fetch(url, {
-                    credentials: 'include',
-                    headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
-                })
-                .then(r => r.ok ? r.json() : null)
-                .then(data => callback(data))
-                .catch(() => callback(null));
-            """, endpoint)
-            if result:
-                print(f"  → Got listings via JS fetch: {endpoint}")
-                return result
-        except Exception:
-            continue
+    url = f'https://mp-search-api.tcgplayer.com/v1/product/{product_id}/listings'
+    body = {"from": 0, "size": LISTING_COUNT * 4, "sort": [{"field": "price", "order": "asc"}]}
+    try:
+        result = driver.execute_async_script("""
+            const [url, body, callback] = [arguments[0], arguments[1], arguments[arguments.length - 1]];
+            fetch(url, {
+                method: 'POST',
+                credentials: 'include',
+                headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+                body: JSON.stringify(body)
+            })
+            .then(r => r.ok ? r.json() : null)
+            .then(data => callback(data))
+            .catch(() => callback(null));
+        """, url, body)
+        if result:
+            print(f"  → Got listings via JS POST")
+            return result
+    except Exception:
+        pass
     return None
 
 
-def parse_listings_response(api_response):
+def parse_listings_response(api_response, product_id=None, market_price=None):
     """
     Normalize a listings API response into a list of dicts:
       price, qty, condition, seller, verified (bool), direct (bool)
@@ -163,34 +143,51 @@ def parse_listings_response(api_response):
     else:
         return []
 
+    # mp-search-api nests actual listing items inside results[0]['results']
+    if items and isinstance(items[0], dict) and 'results' in items[0]:
+        items = items[0].get('results') or []
+
     listings = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        price = (item.get('price') or item.get('listingPrice') or
-                 item.get('lowestPrice') or item.get('salePrice') or '')
-        qty = (item.get('quantity') or item.get('qty') or item.get('quantityAvailable') or '')
-        condition = (item.get('condition') or item.get('conditionName') or
-                     item.get('printing') or 'Near Mint')
-        seller = (item.get('sellerName') or item.get('seller') or
-                  item.get('storeName') or '')
-        # TCGplayer Direct = fulfilled by TCGplayer; goldSeller = top-rated
-        direct = bool(item.get('directProduct') or item.get('direct') or
-                      item.get('tcgDirectSeller') or item.get('channelReason') == 'Direct')
-        verified = direct or bool(item.get('goldSeller') or item.get('verified') or
-                                  item.get('topRatedSeller') or item.get('sellerRating', 0) >= 4.5)
-        # Skip listings with custom photos — these are almost always
-        # "dice only / no cards" or other non-product listings
-        has_custom_photo = bool(
-            item.get('customListingImage') or
-            item.get('hasCustomPhoto') or
-            item.get('customPhoto') or
-            item.get('photo') or
-            item.get('listingPhoto') or
-            item.get('imageUrl')
-        )
-        if has_custom_photo:
+
+        # Standard listings only — no lots, bundles, or "spoils and loot" entries
+        if item.get('listingType', 'standard') != 'standard':
             continue
+
+        # Language filter — languageId 1 = English on TCGplayer (more reliable than
+        # the string field, which sellers often leave blank on foreign variants)
+        lang_id = item.get('languageId')
+        if lang_id is not None and lang_id != 1:
+            continue
+        # Also check the string field as a secondary guard
+        lang = (item.get('language') or item.get('languageAbbreviation') or '').lower()
+        if lang and lang not in ('english', 'en'):
+            continue
+
+        # Skip listings with seller-uploaded custom photos (dice-only, accessories, etc.)
+        # customData is always present as {'images': []} — only filter when images non-empty
+        custom_images = (item.get('customData') or {}).get('images') or []
+        if custom_images:
+            continue
+
+        price = item.get('price') or item.get('sellerPrice') or ''
+
+        # Price sanity check — listings below MIN_LISTING_PRICE_PCT of market price
+        # are almost certainly not the actual product (accessories, opened shells, etc.)
+        if market_price and price != '':
+            try:
+                price_num = float(str(price).replace('$', '').replace(',', ''))
+                if price_num < market_price * MIN_LISTING_PRICE_PCT:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        qty = item.get('quantity') or ''
+        condition = item.get('condition') or 'Near Mint'
+        seller = item.get('sellerName') or ''
+        direct = bool(item.get('directSeller') or item.get('directProduct') or item.get('directListing'))
+        verified = direct or bool(item.get('goldSeller') or item.get('verifiedSeller'))
 
         if price != '':
             listings.append({
@@ -506,28 +503,28 @@ def scrape_product_data(url, driver):
         recent_sales = []
         top_listings = []
 
-        # Strategy 1: Network log interception — read logs ONCE, extract both
+        # Sales: network log interception first, JS fetch fallback
         if product_id:
             log_data = get_api_data_from_network_logs(driver, product_id)
             if log_data['sales']:
                 recent_sales = parse_recent_sales_response(log_data['sales'])
-            if log_data['listings']:
-                top_listings = parse_listings_response(log_data['listings'])
-
-        # Strategy 2: JS fetch fallback (same-origin, cookies included)
         if not recent_sales and product_id:
             api_data = get_recent_sales_via_js(driver, product_id)
             if api_data:
                 recent_sales = parse_recent_sales_response(api_data)
-
-        if not top_listings and product_id:
-            api_data = get_listings_via_js(driver, product_id)
-            if api_data:
-                top_listings = parse_listings_response(api_data)
-
-        # Strategy 3: Click the popup for sales (last resort)
         if not recent_sales:
             recent_sales = try_sales_popup(driver, wait)
+
+        # Listings: always use JS POST (GET endpoint returns aggregations only)
+        if product_id:
+            mp_num = None
+            try:
+                mp_num = float(str(market_price).replace('$', '').replace(',', ''))
+            except (ValueError, TypeError):
+                pass
+            api_data = get_listings_via_js(driver, product_id)
+            if api_data:
+                top_listings = parse_listings_response(api_data, product_id=product_id, market_price=mp_num)
 
         print(f"  → {len(recent_sales)} sale records, {len(top_listings)} listings captured")
 
