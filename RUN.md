@@ -18,13 +18,24 @@ uv run python scraperpdf.py --serve
 
 ### Windows
 ```powershell
+# Install uv (winget comes preinstalled on Windows 11)
+winget install --id=astral-sh.uv -e
+
+# Install Chrome if not already installed
+winget install --id=Google.Chrome -e
+
+# Install dependencies and run
+uv sync
+uv run python scraperpdf.py --serve
+```
+
+**Alternative (without winget):**
+```powershell
 # Install uv
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# Install Chrome if not already installed
-# Download from https://www.google.com/chrome/
+# Install Chrome from https://www.google.com/chrome/
 
-# Install dependencies and run
 uv sync
 uv run python scraperpdf.py --serve
 ```
