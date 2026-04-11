@@ -48,14 +48,15 @@ def find_product_url(name, driver, wait):
     links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/product/']")
     for link in links:
         href = link.get_attribute('href') or ''
-        if 'code-card' in href.lower():
+        link_text = link.text.strip()
+        if link_text.lower() != name.lower():
             continue
         m = re.search(r'tcgplayer\.com/product/(\d+)', href)
         if m:
             clean = f"https://www.tcgplayer.com/product/{m.group(1)}/"
             return clean
 
-    print(f"  ✗ No product link found for: {name}")
+    print(f"  ✗ No exact match found for: {name}")
     return None
 
 
