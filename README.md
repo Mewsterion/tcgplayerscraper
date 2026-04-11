@@ -1,20 +1,25 @@
 # TCGplayer Daily Price Tracker
 
-This Python script automates the process of tracking prices for sealed Pokemon (and other TCG) products on TCGplayer.com. It runs daily, scrapes data for multiple products, records the history in CSV files, and generates a combined PDF report with visualizations and a summary of the day's market activity.
-
-The live project can be found on GitHub: [https://github.com/mewsterion/tcgplayerscraper](https://github.com/mewsterion/tcgplayerscraper)
+This Python tool tracks prices for sealed Pokemon (and other TCG) products on TCGplayer.com. It scrapes data for multiple products, stores history in a SQLite database, generates PDF reports, and includes a web UI for browsing and managing everything.
 
 ## Features
 
-- **Multi-Product Tracking**: Track multiple products by adding their TCGplayer URLs to the `URLS` list.
+- **Multi-Product Tracking**: Track products by ID or URL via `products.txt` (one per line or comma-separated).
+- **Product Catalog**: Built-in searchable catalog of 31,000+ Pokemon TCG products from tcgcsv.com. Search, add, and remove tracked products from the web UI.
 - **Automated Data Scraping**: Uses Selenium with Chrome in headless mode. Captures dynamically loaded content and intercepts internal TCGplayer API calls via Chrome DevTools Protocol (CDP).
 - **Recent Sales Data**: Captures the last 10 individual sale records (date, condition, price, qty) per product by intercepting TCGplayer's internal `mpapi.tcgplayer.com` sales endpoint.
-- **Active Listings**: Fetches the lowest 6 active listings per product via TCGplayer's search API (POST), filtered to English-only, standard listing type, and within a reasonable price range of market value — eliminating Korean/Portuguese variants, loose packs, opened shells, dice-only listings, and other irrelevant entries.
-- **Historical Data Logging**: Saves daily data to individual `.csv` files per product, building a historical price database over time.
+- **Active Listings**: Fetches the lowest 6 active listings per product via TCGplayer's search API (POST), filtered to English-only, standard listing type, and within a reasonable price range of market value.
+- **SQLite Storage**: All price history stored in `tcgplayer.db` with indexed queries for fast lookups.
+- **Rate Limiting**: Configurable delays between requests, retry with exponential backoff, and automatic Chrome session rotation to avoid rate limits.
+- **Web UI** (`--serve`):
+  - **Dashboard** with searchable product table showing market price, lowest ask, last sale, price change, quantity, and total sold.
+  - **Product detail pages** with stats, recent sales, active listings, and interactive Chart.js price history charts.
+  - **Manage Products** page with catalog search, add/remove tracking, and bulk edit.
+  - **Run Scrape** and **Download PDF** buttons with live progress tracking.
+  - **Refresh Catalog** to pull latest products from tcgcsv.com API.
 - **Combined PDF Report** (`TCGplayer_Combo_Report.pdf`):
-  - **Summary page** with Market Price, day-over-day change, quantity, daily sales, average recent sale price, and lowest active ask — all color-coded.
-  - **Detail pages** per product with latest data, recent individual sales table, active listings table (with Direct/Verified seller status), and a price history chart.
-  - **Charts** showing Market Price, 7-day moving average, most recent sale, average of last 10 sales, daily sales volume, and active seller count.
+  - Summary page with Market Price, day-over-day change, quantity, daily sales, average recent sale price, and lowest active ask — all color-coded.
+  - Detail pages per product with latest data, recent sales table, active listings table, and a price history chart.
 - **Automated Scheduling**: Runs via Windows Task Scheduler using the included `scrape.bat`.
 
 ## How It Works
@@ -32,13 +37,13 @@ TCGplayer does not expose sales history or active listings in a public API. This
 
 ### 2. Clone the Repository
 ```bash
-git clone https://github.com/mewsterion/tcgplayerscraper.git
+git clone https://github.com/aaronentwistle/tcgplayerscraper.git
 cd tcgplayerscraper
 ```
 
 ### 3. Install Required Libraries
 ```bash
-pip install pandas matplotlib beautifulsoup4 selenium webdriver-manager fpdf2
+pip install pandas matplotlib beautifulsoup4 selenium webdriver-manager fpdf2 flask
 ```
 
 **Python 3.12+ only:** `distutils` was removed in 3.12. If you hit a `ModuleNotFoundError`:
@@ -48,31 +53,47 @@ pip install setuptools
 
 ## Configuration
 
-Open `scraperpdf.py` and edit the top section:
+Edit `products.txt` to add the product IDs you want to track. Supports bare IDs, full URLs, comma-separated values, and `#` comments:
 
-```python
-URLS = [
-    'https://www.tcgplayer.com/product/624679/',
-    'https://www.tcgplayer.com/product/623628',
-    # Add more product URLs here
-]
+```
+# Sealed products
+624679
+668496, 672394, 528038
 
-RECENT_SALES_COUNT = 10   # number of recent sales to capture
-LISTING_COUNT = 6         # number of lowest active listings to capture
-MIN_LISTING_PRICE_PCT = 0.50  # filter listings below 50% of market price
+# Also accepts full URLs
+https://www.tcgplayer.com/product/593355/
 ```
 
-## Running the Script
+Scraping options can be configured at the top of `scraperpdf.py`:
 
+```python
+RECENT_SALES_COUNT = 10           # number of recent sales to capture
+LISTING_COUNT = 6                 # number of lowest active listings to capture
+MIN_LISTING_PRICE_PCT = 0.50      # filter listings below 50% of market price
+DELAY_BETWEEN_REQUESTS = (2, 4)   # random delay range (seconds) between scrapes
+RETRY_ATTEMPTS = 2                # retries on failure
+SESSION_ROTATE_EVERY = 50         # restart Chrome every N products
+```
+
+## Usage
+
+### Scrape Products
 ```bash
 python scraperpdf.py
 ```
+Scrapes all products in `products.txt`, stores data in SQLite, and generates the PDF report.
 
-The script will:
-1. Launch a headless Chrome browser with CDP network tracking enabled.
-2. Visit each URL, scrape page data, and intercept API responses for sales and listings.
-3. Append today's data to each product's `.csv` file.
-4. Generate `TCGplayer_Combo_Report.pdf`.
+### Start the Web UI
+```bash
+python scraperpdf.py --serve
+```
+Opens a web dashboard at http://127.0.0.1:5000 where you can browse data, search the product catalog, manage tracked products, trigger scrapes, and download PDF reports.
+
+### Generate PDF Only
+```bash
+python scraperpdf.py --pdf
+```
+Generates the PDF report from existing database data without scraping.
 
 ## Scheduling (Windows)
 
