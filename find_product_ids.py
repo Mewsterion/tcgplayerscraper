@@ -48,6 +48,8 @@ def find_product_url(name, driver, wait):
     links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/product/']")
     for link in links:
         href = link.get_attribute('href') or ''
+        if 'code-card' in href.lower():
+            continue
         m = re.search(r'tcgplayer\.com/product/(\d+)', href)
         if m:
             clean = f"https://www.tcgplayer.com/product/{m.group(1)}/"
