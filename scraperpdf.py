@@ -62,13 +62,27 @@ PRODUCTS = [
 ]
 
 
+def _ensure_products_file():
+    """Create products.txt from the example file if it doesn't exist."""
+    path = os.path.join(_BASE_DIR, PRODUCTS_FILE)
+    if os.path.isfile(path):
+        return
+    example_path = os.path.join(_BASE_DIR, PRODUCTS_FILE + '.example')
+    if os.path.isfile(example_path):
+        shutil.copy2(example_path, path)
+        print(f"Created {PRODUCTS_FILE} from {PRODUCTS_FILE}.example")
+    else:
+        with open(path, 'w') as f:
+            f.write("# Add product IDs here, one per line. See products.txt.example for format.\n")
+        print(f"Created empty {PRODUCTS_FILE}")
+
+
 def load_products():
-    """Load products from PRODUCTS_FILE if it exists, otherwise use the hardcoded PRODUCTS list.
+    """Load products from PRODUCTS_FILE, creating it if needed.
     Supports one entry per line, comma-separated entries, or a mix of both.
     Lines starting with # are ignored."""
+    _ensure_products_file()
     path = os.path.join(_BASE_DIR, PRODUCTS_FILE)
-    if not os.path.isfile(path):
-        return PRODUCTS
     entries = []
     with open(path, 'r') as f:
         for line in f:
