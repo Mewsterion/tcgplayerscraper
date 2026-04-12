@@ -11,7 +11,7 @@
         nav { padding: 0.5rem 1rem; }
         .actions { display: flex; gap: 0.5rem; align-items: center; }
         .actions button, .actions a { margin: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem; }
-        #scrape-status { font-size: 0.8rem; opacity: 0.8; }
+        #scrape-status { font-size: 0.8rem; opacity: 0.8; cursor: default; }
         table { font-size: 0.85rem; }
         .positive { color: #22c55e; }
         .negative { color: #ef4444; }
@@ -61,11 +61,13 @@
                     const el = document.getElementById('scrape-status');
                     const btn = document.getElementById('scrape-btn');
                     if (data.running) {
-                        el.textContent = `[${data.current}/${data.total}] ${data.last_product}`;
+                        el.textContent = `[${data.current}/${data.total}]`;
+                        el.title = data.last_product;
                         btn.disabled = true;
                         setTimeout(pollScrapeStatus, 2000);
                     } else if (data.total > 0) {
-                        el.textContent = `Done: ${data.succeeded} succeeded, ${data.failed.length} failed`;
+                        el.textContent = `Done: ${data.succeeded}/${data.total}`;
+                        el.title = `${data.succeeded} succeeded, ${data.failed.length} failed`;
                         btn.disabled = false;
                     } else {
                         el.textContent = '';
