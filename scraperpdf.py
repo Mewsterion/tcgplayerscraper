@@ -1274,7 +1274,12 @@ def _scrape_sequential(products, settings, proxies, progress_callback=None, gene
     proxy_idx = 0
     proxy = proxies[0] if use_proxies else None
     ua = _random_ua() if use_ua_rotation else None
-    driver = create_driver(proxy=proxy, user_agent=ua)
+    try:
+        driver = create_driver(proxy=proxy, user_agent=ua)
+    except Exception as e:
+        log_scrape(None, "error", f"Failed to create Chrome driver: {e}")
+        print(f"ERROR: Failed to create Chrome driver: {e}")
+        return 0, [str(entry) for entry in products]
 
     all_products_data = []
     failed = []
@@ -1358,7 +1363,12 @@ def _scrape_worker(worker_id, chunk, proxy, settings, counter, lock, total, prog
     resume = settings.get('resume_enabled', False)
 
     ua = _random_ua() if use_ua_rotation else None
-    driver = create_driver(proxy=proxy, user_agent=ua)
+    try:
+        driver = create_driver(proxy=proxy, user_agent=ua)
+    except Exception as e:
+        log_scrape(None, "error", f"[W{worker_id}] Failed to create Chrome driver: {e}")
+        return [], [str(entry) for entry in chunk]
+
     succeeded = []
     failed = []
 

@@ -89,6 +89,7 @@ def _run_scrape_thread():
         scrape_status["failed"] = failed
     except Exception as e:
         scrape_status["last_product"] = f"Error: {e}"
+        scraperpdf.log_scrape(None, "error", f"Scrape thread crashed: {e}")
     finally:
         scrape_status["running"] = False
 
