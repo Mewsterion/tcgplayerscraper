@@ -67,6 +67,10 @@
 
     <div style="display:flex; gap:0.5rem; margin-bottom:1rem; align-items:center; flex-wrap:wrap;">
         <input type="search" x-model="searchQuery" placeholder="Search products..." style="margin:0; max-width:400px;">
+        <label style="margin:0; display:flex; align-items:center; gap:0.3rem; font-size:0.85rem; white-space:nowrap; cursor:pointer;">
+            <input type="checkbox" x-model="showAll" @change="init()" style="margin:0;">
+            Show all history
+        </label>
         <div style="margin-left:auto; display:flex; gap:0.5rem; align-items:center;">
         <button x-show="selectedIds.length > 0" x-cloak class="remove-btn"
                 @click="removeSelected()" x-text="'Remove ' + selectedIds.length + ' selected'"></button>
@@ -214,6 +218,7 @@ function dashboardApp() {
         loading: true,
         showColumnMenu: false,
         searchQuery: '',
+        showAll: false,
         selectedIds: [],
         allColumns: ALL_COLUMNS,
         columnOrder: prefs?.columnOrder || [...DEFAULT_ORDER],
@@ -392,7 +397,8 @@ function dashboardApp() {
 
         async init() {
             try {
-                const resp = await fetch('/api/dashboard');
+                const url = '/api/dashboard' + (this.showAll ? '?show_all=1' : '');
+                const resp = await fetch(url);
                 this.products = await resp.json();
             } catch (e) {
                 console.error('Failed to load dashboard data:', e);

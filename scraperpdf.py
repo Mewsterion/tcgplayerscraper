@@ -668,7 +668,7 @@ def scrape_product_data(product_id, url, driver):
 
 
 def init_db():
-    """Create the price_history table if it doesn't exist."""
+    """Create the price_history and scrape_log tables if they don't exist."""
     conn = sqlite3.connect(_db_path())
     conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -689,8 +689,37 @@ def init_db():
         daily_sales REAL DEFAULT 0.0
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_product_id ON price_history(product_id)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS scrape_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        product_id TEXT,
+        status TEXT NOT NULL,
+        message TEXT
+    )''')
     conn.commit()
     conn.close()
+
+
+def log_scrape(product_id, status, message=""):
+    """Log a scrape attempt to the scrape_log table."""
+    conn = sqlite3.connect(_db_path())
+    conn.execute(
+        'INSERT INTO scrape_log (timestamp, product_id, status, message) VALUES (?, ?, ?, ?)',
+        (datetime.now().isoformat(), str(product_id) if product_id else None, status, message)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_scrape_logs(limit=200):
+    """Return recent scrape log entries."""
+    conn = sqlite3.connect(_db_path())
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        'SELECT * FROM scrape_log ORDER BY id DESC LIMIT ?', (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def update_data(product_id, product_name, new_data):
@@ -1255,12 +1284,14 @@ def _scrape_sequential(products, settings, proxies, progress_callback=None, gene
             product_id, url = normalize_product(entry)
             if product_id is None:
                 print(f"\n[{i}/{total}]  Could not parse product: {entry}")
+                log_scrape(None, "skipped", f"Could not parse: {entry}")
                 if progress_callback:
                     progress_callback(i, total, f"Skipped: {entry}")
                 continue
 
             if resume and _already_scraped_today(product_id):
                 print(f"\n[{i}/{total}] Already scraped today, skipping: {product_id}")
+                log_scrape(product_id, "skipped", "Already scraped today")
                 if progress_callback:
                     progress_callback(i, total, f"Skipped (already scraped): {product_id}")
                 continue
@@ -1278,10 +1309,12 @@ def _scrape_sequential(products, settings, proxies, progress_callback=None, gene
                         'latest': df.iloc[-1].to_dict(),
                         'history': df
                     })
+                log_scrape(product_id, "success", name)
                 if progress_callback:
                     progress_callback(i, total, name)
             else:
                 print(f"  Failed: {url}")
+                log_scrape(product_id, "failed", f"No data returned for {url}")
                 failed.append(entry)
                 if progress_callback:
                     progress_callback(i, total, f"Failed: {product_id}")
@@ -1333,6 +1366,7 @@ def _scrape_worker(worker_id, chunk, proxy, settings, counter, lock, total, prog
         for local_i, entry in enumerate(chunk, 1):
             product_id, url = normalize_product(entry)
             if product_id is None:
+                log_scrape(None, "skipped", f"[W{worker_id}] Could not parse: {entry}")
                 with lock:
                     counter[0] += 1
                     if progress_callback:
@@ -1340,6 +1374,7 @@ def _scrape_worker(worker_id, chunk, proxy, settings, counter, lock, total, prog
                 continue
 
             if resume and _already_scraped_today(product_id):
+                log_scrape(product_id, "skipped", f"[W{worker_id}] Already scraped today")
                 with lock:
                     counter[0] += 1
                     if progress_callback:
@@ -1355,12 +1390,14 @@ def _scrape_worker(worker_id, chunk, proxy, settings, counter, lock, total, prog
             if data and name:
                 update_data(product_id, name, data)
                 succeeded.append(entry)
+                log_scrape(product_id, "success", f"[W{worker_id}] {name}")
                 with lock:
                     counter[0] += 1
                     if progress_callback:
                         progress_callback(counter[0], total, name)
             else:
                 failed.append(entry)
+                log_scrape(product_id, "failed", f"[W{worker_id}] No data returned for {url}")
                 with lock:
                     counter[0] += 1
                     if progress_callback:
@@ -1459,9 +1496,11 @@ def run_scrape(progress_callback=None, generate_pdf=True):
     products = load_products()
     total = len(products)
     print(f"Loaded {total} products")
+    log_scrape(None, "start", f"Scrape started: {total} products")
 
     if total == 0:
         print("No products to scrape.")
+        log_scrape(None, "end", "No products to scrape")
         return 0, []
 
     s = app_settings.load_settings()
@@ -1469,9 +1508,12 @@ def run_scrape(progress_callback=None, generate_pdf=True):
 
     # Use parallel if enabled and we have proxies
     if s.get('parallel_enabled') and proxies and total > 1:
-        return _run_parallel_scrape(products, proxies, s, progress_callback, generate_pdf)
+        succeeded, failed = _run_parallel_scrape(products, proxies, s, progress_callback, generate_pdf)
     else:
-        return _scrape_sequential(products, s, proxies, progress_callback, generate_pdf)
+        succeeded, failed = _scrape_sequential(products, s, proxies, progress_callback, generate_pdf)
+
+    log_scrape(None, "end", f"Scrape finished: {succeeded} succeeded, {len(failed)} failed")
+    return succeeded, failed
 
 
 if __name__ == '__main__':

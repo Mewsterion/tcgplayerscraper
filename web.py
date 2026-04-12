@@ -183,6 +183,16 @@ def create_app():
             # Drop bulky JSON fields not needed for the table
             p.pop('top_listings', None)
             p.pop('recent_sales', None)
+            # Sanitize any non-JSON-serializable values (e.g. bytes from corrupted DB rows)
+            for k, v in p.items():
+                if isinstance(v, bytes):
+                    p[k] = 0.0
+        # Filter to tracked products unless show_all is set
+        show_all = request.args.get("show_all", "").lower() in ("1", "true")
+        if not show_all:
+            tracked = catalog.get_tracked_ids()
+            if tracked:
+                products = [p for p in products if str(p['product_id']) in tracked]
         q = request.args.get("q", "").strip().lower()
         if q:
             products = [p for p in products if q in p["product_name"].lower() or q in str(p["product_id"])]
@@ -285,6 +295,18 @@ def create_app():
             with open(products_path, "r") as f:
                 content = f.read()
         return jsonify({"content": content})
+
+    # --- Scrape Log ---
+
+    @app.route("/logs")
+    def logs_page():
+        return render_template("logs.html")
+
+    @app.route("/api/logs")
+    def api_logs():
+        limit = request.args.get("limit", 200, type=int)
+        logs = scraperpdf.get_scrape_logs(limit=limit)
+        return jsonify(logs)
 
     # --- Schedules ---
 
