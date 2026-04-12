@@ -1202,6 +1202,42 @@ def _already_scraped_today(product_id):
     return count > 0
 
 
+def _find_chrome_binary():
+    """Find Chrome binary path, checking common install locations."""
+    import settings as app_settings
+    # Check settings for custom path first
+    custom_path = app_settings.load_settings().get('chrome_binary_path', '').strip()
+    if custom_path and os.path.isfile(custom_path):
+        return custom_path
+
+    if sys.platform == 'win32':
+        candidates = [
+            os.path.expandvars(r'%ProgramFiles%\Google\Chrome\Application\chrome.exe'),
+            os.path.expandvars(r'%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe'),
+            os.path.expandvars(r'%LocalAppData%\Google\Chrome\Application\chrome.exe'),
+            os.path.expandvars(r'%UserProfile%\AppData\Local\Google\Chrome\Application\chrome.exe'),
+            r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+            r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+        # Try where command
+        found = shutil.which('chrome') or shutil.which('google-chrome')
+        if found:
+            return found
+    elif sys.platform == 'darwin':
+        mac_path = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        if os.path.isfile(mac_path):
+            return mac_path
+    else:
+        for name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
+            found = shutil.which(name)
+            if found:
+                return found
+    return None
+
+
 def create_driver(proxy=None, user_agent=None):
     """Create and return a fresh Chrome driver with CDP network tracking.
 
@@ -1209,6 +1245,12 @@ def create_driver(proxy=None, user_agent=None):
     user_agent: optional UA string override
     """
     options = webdriver.ChromeOptions()
+
+    # Set Chrome binary path if not in default location
+    chrome_path = _find_chrome_binary()
+    if chrome_path:
+        options.binary_location = chrome_path
+
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')

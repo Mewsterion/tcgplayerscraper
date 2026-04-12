@@ -92,6 +92,15 @@
     <div class="setting-desc">Restart Chrome every N products to reduce detection.</div>
 </div>
 
+<div class="settings-section">
+    <h4>Chrome</h4>
+    <div class="setting-row">
+        <label for="chrome_binary_path">Chrome binary path</label>
+    </div>
+    <input type="text" id="chrome_binary_path" placeholder="Leave blank for auto-detect" style="font-family:monospace; font-size:0.85rem;">
+    <div class="setting-desc">Override if Chrome isn't found automatically. Example: <code>C:\Program Files\Google\Chrome\Application\chrome.exe</code></div>
+</div>
+
 <div class="save-bar">
     <button onclick="saveSettings()">Save Settings</button>
     <span id="save-status"></span>
@@ -102,6 +111,7 @@
 <script>
     const TOGGLE_FIELDS = ['proxies_enabled', 'parallel_enabled', 'ua_rotation_enabled', 'resume_enabled'];
     const NUMBER_FIELDS = ['parallel_max_workers', 'retry_attempts', 'session_rotate_every'];
+    const TEXT_FIELDS = ['chrome_binary_path'];
 
     function updateParallelState() {
         const proxiesOn = document.getElementById('proxies_enabled').checked;
@@ -134,6 +144,9 @@
                 const delay = data.delay_between_requests || [2, 4];
                 document.getElementById('delay_min').value = delay[0];
                 document.getElementById('delay_max').value = delay[1];
+                TEXT_FIELDS.forEach(f => {
+                    document.getElementById(f).value = data[f] || '';
+                });
                 updateParallelState();
             });
 
@@ -157,6 +170,9 @@
             parseFloat(document.getElementById('delay_min').value) || 2,
             parseFloat(document.getElementById('delay_max').value) || 4,
         ];
+        TEXT_FIELDS.forEach(f => {
+            settings[f] = document.getElementById(f).value.trim();
+        });
 
         const statusEl = document.getElementById('save-status');
         statusEl.textContent = 'Saving...';

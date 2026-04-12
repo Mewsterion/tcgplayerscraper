@@ -14,6 +14,7 @@ DEFAULTS = {
     "delay_between_requests": [2, 4],
     "retry_attempts": 2,
     "session_rotate_every": 50,
+    "chrome_binary_path": "",
 }
 
 
