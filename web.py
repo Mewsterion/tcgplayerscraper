@@ -148,12 +148,27 @@ def create_app():
         detail = scraperpdf.get_product_detail(product_id)
         if not detail:
             return "Product not found", 404
+        return render_template("product_detail.html", product_id=product_id)
+
+    @app.route("/api/product/<product_id>")
+    def api_product_detail(product_id):
+        detail = scraperpdf.get_product_detail(product_id)
+        if not detail:
+            return jsonify({"error": "Product not found"}), 404
+        # Sanitize bytes values
+        for k, v in detail.items():
+            if isinstance(v, bytes):
+                detail[k] = 0.0
         history = scraperpdf.get_product_history(product_id)
         history_data = []
         if history is not None and not history.empty:
             for _, row in history.iterrows():
-                history_data.append(row.to_dict())
-        return render_template("product_detail.html", product=detail, history=history_data)
+                d = row.to_dict()
+                for k, v in d.items():
+                    if isinstance(v, bytes):
+                        d[k] = 0.0
+                history_data.append(d)
+        return jsonify({"product": detail, "history": history_data})
 
     @app.route("/manage")
     def manage():
