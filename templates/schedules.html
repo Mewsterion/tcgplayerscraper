@@ -157,6 +157,54 @@
         return d.toLocaleString();
     }
 
+    function formatSchedule(cronStr) {
+        // Parse "cron[key='val', key='val', ...]" into readable text
+        const m = cronStr.match(/cron\[(.+)\]/);
+        if (!m) return cronStr;
+        const parts = {};
+        m[1].split(',').forEach(p => {
+            const [k, v] = p.trim().split('=');
+            parts[k] = v.replace(/'/g, '');
+        });
+        const DAYS = {mon:'Monday',tue:'Tuesday',wed:'Wednesday',thu:'Thursday',fri:'Friday',sat:'Saturday',sun:'Sunday'};
+        const hour = parts.hour || '0';
+        const minute = parts.minute || '0';
+        const dow = parts.day_of_week;
+        const day = parts.day;
+        const month = parts.month;
+
+        // Format time
+        function fmtTime(h, min) {
+            if (h.includes('/')) {
+                const interval = h.split('/')[1];
+                return 'Every ' + interval + ' hours at :' + min.padStart(2, '0');
+            }
+            const hr = parseInt(h);
+            const ampm = hr >= 12 ? 'PM' : 'AM';
+            const h12 = hr === 0 ? 12 : hr > 12 ? hr - 12 : hr;
+            return h12 + ':' + min.padStart(2, '0') + ' ' + ampm;
+        }
+
+        const timeStr = fmtTime(hour, minute);
+
+        // Every N hours pattern
+        if (hour.includes('/')) return timeStr;
+
+        // Weekly
+        if (dow && dow !== '*') {
+            const dayName = DAYS[dow] || dow;
+            return 'Weekly on ' + dayName + ' at ' + timeStr;
+        }
+
+        // Monthly
+        if (day && day !== '*') {
+            return 'Monthly on day ' + day + ' at ' + timeStr;
+        }
+
+        // Daily
+        return 'Daily at ' + timeStr;
+    }
+
     function loadSchedules() {
         fetch('/api/schedules')
             .then(r => r.json())
@@ -172,7 +220,7 @@
                             <div class="schedule-info">
                                 <div class="schedule-type">${esc(JOB_TYPE_LABELS[j.job_type] || j.job_type)}</div>
                                 <div class="schedule-meta">
-                                    ${esc(j.schedule)}<br>
+                                    ${esc(formatSchedule(j.schedule))}<br>
                                     Next run: ${formatNextRun(j.next_run)}
                                 </div>
                             </div>
