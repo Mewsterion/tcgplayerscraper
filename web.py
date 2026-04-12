@@ -1,7 +1,12 @@
 import json
 import os
 import threading
+import uuid
+from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 import scraperpdf
 import catalog
@@ -39,6 +44,38 @@ def _make_progress_callback(status, name_key):
 scrape_status = _make_status({"last_product": "", "failed": [], "succeeded": 0})
 catalog_status = _make_status({"last_group": ""})
 
+# Track last scheduled run results
+schedule_last_run = {
+    "scrape": {"time": None, "result": None},
+    "catalog_refresh": {"time": None, "result": None},
+}
+
+
+def _scheduled_scrape():
+    """Run scrape as a scheduled job."""
+    schedule_last_run["scrape"]["time"] = datetime.now().isoformat()
+    try:
+        _run_scrape_thread()
+        schedule_last_run["scrape"]["result"] = f"OK: {scrape_status.get('succeeded', 0)} succeeded"
+    except Exception as e:
+        schedule_last_run["scrape"]["result"] = f"Error: {e}"
+
+
+def _scheduled_catalog_refresh():
+    """Run catalog refresh as a scheduled job."""
+    schedule_last_run["catalog_refresh"]["time"] = datetime.now().isoformat()
+    try:
+        _run_catalog_refresh_thread()
+        schedule_last_run["catalog_refresh"]["result"] = f"OK: {catalog_status.get('last_group', '')}"
+    except Exception as e:
+        schedule_last_run["catalog_refresh"]["result"] = f"Error: {e}"
+
+
+JOB_FUNCTIONS = {
+    "scrape": _scheduled_scrape,
+    "catalog_refresh": _scheduled_catalog_refresh,
+}
+
 
 def _run_scrape_thread():
     scrape_status.update({"running": True, "current": 0, "total": 0, "last_product": "", "failed": [], "succeeded": 0})
@@ -70,6 +107,13 @@ def _run_catalog_refresh_thread():
 
 def create_app():
     app = Flask(__name__)
+
+    # Initialize scheduler with SQLite persistence
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), scraperpdf.DB_FILE)
+    scheduler = BackgroundScheduler(
+        jobstores={'default': SQLAlchemyJobStore(url=f'sqlite:///{db_path}')},
+    )
+    scheduler.start()
 
     # First-run: ensure catalog is populated
     scraperpdf.init_db()
@@ -240,5 +284,81 @@ def create_app():
             with open(products_path, "r") as f:
                 content = f.read()
         return jsonify({"content": content})
+
+    # --- Schedules ---
+
+    @app.route("/schedules")
+    def schedules_page():
+        return render_template("schedules.html")
+
+    @app.route("/api/schedules")
+    def api_schedules_list():
+        jobs = []
+        for job in scheduler.get_jobs():
+            trigger = job.trigger
+            next_run = job.next_run_time.isoformat() if job.next_run_time else None
+            # Extract cron fields from trigger
+            cron_str = str(trigger)
+            job_type = job.id.split('_', 1)[0] if '_' in job.id else job.id
+            jobs.append({
+                "id": job.id,
+                "job_type": job_type,
+                "schedule": cron_str,
+                "next_run": next_run,
+            })
+        return jsonify({"jobs": jobs, "last_run": schedule_last_run})
+
+    @app.route("/api/schedules", methods=["POST"])
+    def api_schedules_create():
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Request body required"}), 400
+        job_type = data.get("job_type")
+        if job_type not in JOB_FUNCTIONS:
+            return jsonify({"error": f"Invalid job_type. Must be one of: {list(JOB_FUNCTIONS.keys())}"}), 400
+
+        mode = data.get("mode", "cron")
+        try:
+            if mode == "daily":
+                hour = int(data.get("hour", 5))
+                minute = int(data.get("minute", 0))
+                trigger = CronTrigger(hour=hour, minute=minute)
+            elif mode == "weekly":
+                day_of_week = data.get("day_of_week", "mon")
+                hour = int(data.get("hour", 5))
+                minute = int(data.get("minute", 0))
+                trigger = CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute)
+            elif mode == "cron":
+                expr = data.get("expression", "").strip()
+                if not expr:
+                    return jsonify({"error": "Cron expression required"}), 400
+                parts = expr.split()
+                if len(parts) != 5:
+                    return jsonify({"error": "Cron expression must have 5 fields (minute hour day month day_of_week)"}), 400
+                trigger = CronTrigger(
+                    minute=parts[0], hour=parts[1], day=parts[2],
+                    month=parts[3], day_of_week=parts[4]
+                )
+            else:
+                return jsonify({"error": "Invalid mode. Must be daily, weekly, or cron"}), 400
+        except Exception as e:
+            return jsonify({"error": f"Invalid schedule: {e}"}), 400
+
+        job_id = f"{job_type}_{uuid.uuid4().hex[:8]}"
+        scheduler.add_job(
+            JOB_FUNCTIONS[job_type],
+            trigger=trigger,
+            id=job_id,
+            replace_existing=False,
+        )
+        return jsonify({"created": job_id})
+
+    @app.route("/api/schedules/<job_id>", methods=["DELETE"])
+    def api_schedules_delete(job_id):
+        try:
+            scheduler.remove_job(job_id)
+            return jsonify({"deleted": job_id})
+        except Exception:
+            return jsonify({"error": "Job not found"}), 404
 
     return app
