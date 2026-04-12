@@ -5,8 +5,11 @@
 # pip install setuptools
 
 import argparse
+import concurrent.futures
 import json
 import shutil
+import tempfile
+import threading
 import time
 import re
 import random
@@ -108,6 +111,25 @@ DELAY_BETWEEN_REQUESTS = (2, 4)   # random delay range in seconds between scrape
 RETRY_ATTEMPTS = 2                 # number of retries on failure
 RETRY_BACKOFF = 10                 # seconds to wait before first retry (doubles each attempt)
 SESSION_ROTATE_EVERY = 50          # restart Chrome every N products
+
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+]
+
+
+def _random_ua():
+    """Return a random user agent string."""
+    return random.choice(USER_AGENTS)
+
 
 _UNICODE_REPLACEMENTS = {
     '\u2019': "'", '\u2018': "'",
@@ -1102,8 +1124,61 @@ def check_chrome_installed():
     return False
 
 
-def create_driver():
-    """Create and return a fresh Chrome driver with CDP network tracking."""
+def _create_proxy_auth_extension(proxy):
+    """Create a temporary Chrome extension for proxy authentication.
+    Returns the path to the extension directory."""
+    ext_dir = tempfile.mkdtemp(prefix='proxy_auth_')
+    manifest = {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Proxy Auth",
+        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage",
+                        "<all_urls>", "webRequest", "webRequestBlocking"],
+        "background": {"scripts": ["background.js"]},
+        "minimum_chrome_version": "22.0.0"
+    }
+    background_js = """
+    var config = {
+        mode: "fixed_servers",
+        rules: {
+            singleProxy: { scheme: "http", host: "%s", port: parseInt(%s) },
+            bypassList: ["localhost"]
+        }
+    };
+    chrome.proxy.settings.set({value: config, scope: "regular"}, function(){});
+    function callbackFn(details) {
+        return { authCredentials: { username: "%s", password: "%s" } };
+    }
+    chrome.webRequest.onAuthRequired.addListener(callbackFn,
+        {urls: ["<all_urls>"]}, ['blocking']);
+    """ % (proxy['host'], proxy['port'], proxy['user'], proxy['pass'])
+
+    with open(os.path.join(ext_dir, 'manifest.json'), 'w') as f:
+        json.dump(manifest, f)
+    with open(os.path.join(ext_dir, 'background.js'), 'w') as f:
+        f.write(background_js)
+    return ext_dir
+
+
+def _already_scraped_today(product_id):
+    """Check if a product has already been scraped today."""
+    today = datetime.now().strftime('%Y-%m-%d')
+    db_path = os.path.join(_BASE_DIR, DB_FILE)
+    conn = sqlite3.connect(db_path)
+    count = conn.execute(
+        'SELECT COUNT(*) FROM price_history WHERE product_id = ? AND date = ?',
+        (str(product_id), today)
+    ).fetchone()[0]
+    conn.close()
+    return count > 0
+
+
+def create_driver(proxy=None, user_agent=None):
+    """Create and return a fresh Chrome driver with CDP network tracking.
+
+    proxy: optional dict with host, port, user, pass keys
+    user_agent: optional UA string override
+    """
     options = webdriver.ChromeOptions()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
@@ -1111,42 +1186,67 @@ def create_driver():
     options.add_argument('--disable-gpu')
     options.add_argument('--log-level=3')
     options.add_experimental_option('excludeSwitches', ['enable-logging'])
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    ua = user_agent or DEFAULT_USER_AGENT
+    options.add_argument(f"user-agent={ua}")
     options.add_argument('--window-size=1920,1080')
     options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+
+    _proxy_ext_dir = None
+    if proxy:
+        if proxy.get('user') and proxy.get('pass'):
+            _proxy_ext_dir = _create_proxy_auth_extension(proxy)
+            options.add_argument(f'--load-extension={_proxy_ext_dir}')
+            # Can't use headless=new with extensions, use old headless
+            options.arguments = [a for a in options.arguments if a != '--headless=new']
+            options.add_argument('--headless')
+        else:
+            options.add_argument(f'--proxy-server=http://{proxy["host"]}:{proxy["port"]}')
+
     driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
     driver.set_page_load_timeout(60)
     driver.execute_cdp_cmd('Network.enable', {})
+    # Store ext dir ref for cleanup
+    driver._proxy_ext_dir = _proxy_ext_dir
     return driver
 
 
-def scrape_with_retry(product_id, url, driver):
+def _cleanup_driver(driver):
+    """Quit driver and clean up any proxy auth extension temp dir."""
+    ext_dir = getattr(driver, '_proxy_ext_dir', None)
+    driver.quit()
+    if ext_dir and os.path.isdir(ext_dir):
+        shutil.rmtree(ext_dir, ignore_errors=True)
+
+
+def scrape_with_retry(product_id, url, driver, retry_attempts=None):
     """Attempt to scrape a product, retrying with backoff on failure."""
-    for attempt in range(1 + RETRY_ATTEMPTS):
+    retries = retry_attempts if retry_attempts is not None else RETRY_ATTEMPTS
+    for attempt in range(1 + retries):
         name, data = scrape_product_data(product_id, url, driver)
         if data and name and name != "Unknown Product":
             return name, data
-        if attempt < RETRY_ATTEMPTS:
+        if attempt < retries:
             wait = RETRY_BACKOFF * (2 ** attempt)
-            print(f"  ↻ Retry {attempt + 1}/{RETRY_ATTEMPTS} in {wait}s...")
+            print(f"  Retry {attempt + 1}/{retries} in {wait}s...")
             time.sleep(wait)
     return None, None
 
 
-def run_scrape(progress_callback=None, generate_pdf=True):
-    """Run the full scrape pipeline. Returns (succeeded_count, failed_list).
-
-    progress_callback: optional callable(current, total, product_name) for live status updates.
-    generate_pdf: if True, generate the PDF report after scraping.
-    """
-    init_db()
-    if not check_chrome_installed():
-        return 0, []
-    products = load_products()
+def _scrape_sequential(products, settings, proxies, progress_callback=None, generate_pdf=True):
+    """Run scrape sequentially with a single driver. Returns (succeeded_count, failed_list)."""
     total = len(products)
-    print(f"Loaded {total} products")
+    delay_range = tuple(settings.get('delay_between_requests', DELAY_BETWEEN_REQUESTS))
+    retry_attempts = settings.get('retry_attempts', RETRY_ATTEMPTS)
+    rotate_every = settings.get('session_rotate_every', SESSION_ROTATE_EVERY)
+    resume = settings.get('resume_enabled', False)
+    use_ua_rotation = settings.get('ua_rotation_enabled', False)
+    use_proxies = settings.get('proxies_enabled', False) and proxies
 
-    driver = create_driver()
+    proxy_idx = 0
+    proxy = proxies[0] if use_proxies else None
+    ua = _random_ua() if use_ua_rotation else None
+    driver = create_driver(proxy=proxy, user_agent=ua)
+
     all_products_data = []
     failed = []
 
@@ -1154,15 +1254,21 @@ def run_scrape(progress_callback=None, generate_pdf=True):
         for i, entry in enumerate(products, 1):
             product_id, url = normalize_product(entry)
             if product_id is None:
-                print(f"\n[{i}/{total}]  ✗ Could not parse product: {entry}")
+                print(f"\n[{i}/{total}]  Could not parse product: {entry}")
                 if progress_callback:
                     progress_callback(i, total, f"Skipped: {entry}")
+                continue
+
+            if resume and _already_scraped_today(product_id):
+                print(f"\n[{i}/{total}] Already scraped today, skipping: {product_id}")
+                if progress_callback:
+                    progress_callback(i, total, f"Skipped (already scraped): {product_id}")
                 continue
 
             print(f"\n[{i}/{total}] Scraping: {url}")
             if progress_callback:
                 progress_callback(i, total, f"Scraping {product_id}...")
-            name, data = scrape_with_retry(product_id, url, driver)
+            name, data = scrape_with_retry(product_id, url, driver, retry_attempts=retry_attempts)
 
             if data and name:
                 df = update_data(product_id, name, data)
@@ -1175,22 +1281,26 @@ def run_scrape(progress_callback=None, generate_pdf=True):
                 if progress_callback:
                     progress_callback(i, total, name)
             else:
-                print(f"  ✗ Failed: {url}")
+                print(f"  Failed: {url}")
                 failed.append(entry)
                 if progress_callback:
                     progress_callback(i, total, f"Failed: {product_id}")
             print("-" * 40)
 
             # Session rotation
-            if i % SESSION_ROTATE_EVERY == 0 and i < total:
+            if i % rotate_every == 0 and i < total:
                 print(f"\n--- Rotating Chrome session (after {i} products) ---")
-                driver.quit()
+                _cleanup_driver(driver)
                 time.sleep(3)
-                driver = create_driver()
+                if use_proxies:
+                    proxy_idx = (proxy_idx + 1) % len(proxies)
+                    proxy = proxies[proxy_idx]
+                ua = _random_ua() if use_ua_rotation else None
+                driver = create_driver(proxy=proxy, user_agent=ua)
 
             # Delay between requests
             if i < total:
-                delay = random.uniform(*DELAY_BETWEEN_REQUESTS)
+                delay = random.uniform(*delay_range)
                 time.sleep(delay)
 
         if generate_pdf and all_products_data:
@@ -1203,7 +1313,165 @@ def run_scrape(progress_callback=None, generate_pdf=True):
         return len(all_products_data), failed
 
     finally:
-        driver.quit()
+        _cleanup_driver(driver)
+
+
+def _scrape_worker(worker_id, chunk, proxy, settings, counter, lock, total, progress_callback):
+    """Worker function for parallel scraping. Scrapes a chunk of products with one driver."""
+    use_ua_rotation = settings.get('ua_rotation_enabled', False)
+    delay_range = tuple(settings.get('delay_between_requests', DELAY_BETWEEN_REQUESTS))
+    retry_attempts = settings.get('retry_attempts', RETRY_ATTEMPTS)
+    rotate_every = settings.get('session_rotate_every', SESSION_ROTATE_EVERY)
+    resume = settings.get('resume_enabled', False)
+
+    ua = _random_ua() if use_ua_rotation else None
+    driver = create_driver(proxy=proxy, user_agent=ua)
+    succeeded = []
+    failed = []
+
+    try:
+        for local_i, entry in enumerate(chunk, 1):
+            product_id, url = normalize_product(entry)
+            if product_id is None:
+                with lock:
+                    counter[0] += 1
+                    if progress_callback:
+                        progress_callback(counter[0], total, f"Skipped: {entry}")
+                continue
+
+            if resume and _already_scraped_today(product_id):
+                with lock:
+                    counter[0] += 1
+                    if progress_callback:
+                        progress_callback(counter[0], total, f"Skipped (already scraped): {product_id}")
+                continue
+
+            with lock:
+                if progress_callback:
+                    progress_callback(counter[0], total, f"[W{worker_id}] Scraping {product_id}...")
+
+            name, data = scrape_with_retry(product_id, url, driver, retry_attempts=retry_attempts)
+
+            if data and name:
+                update_data(product_id, name, data)
+                succeeded.append(entry)
+                with lock:
+                    counter[0] += 1
+                    if progress_callback:
+                        progress_callback(counter[0], total, name)
+            else:
+                failed.append(entry)
+                with lock:
+                    counter[0] += 1
+                    if progress_callback:
+                        progress_callback(counter[0], total, f"Failed: {product_id}")
+
+            # Session rotation within worker
+            if local_i % rotate_every == 0 and local_i < len(chunk):
+                _cleanup_driver(driver)
+                time.sleep(3)
+                ua = _random_ua() if use_ua_rotation else None
+                driver = create_driver(proxy=proxy, user_agent=ua)
+
+            if local_i < len(chunk):
+                delay = random.uniform(*delay_range)
+                time.sleep(delay)
+
+    finally:
+        _cleanup_driver(driver)
+
+    return succeeded, failed
+
+
+def _run_parallel_scrape(products, proxies, settings, progress_callback=None, generate_pdf=True):
+    """Run scrape in parallel with multiple Chrome instances. Returns (succeeded_count, failed_list)."""
+    max_workers = settings.get('parallel_max_workers', 3)
+    num_workers = min(max_workers, len(proxies), len(products))
+    if num_workers < 2:
+        return _scrape_sequential(products, settings, proxies, progress_callback, generate_pdf)
+
+    total = len(products)
+    print(f"Parallel scrape: {num_workers} workers, {total} products")
+
+    # Round-robin distribute products to workers
+    chunks = [[] for _ in range(num_workers)]
+    for i, product in enumerate(products):
+        chunks[i % num_workers].append(product)
+
+    # Assign proxies to workers (cycle if fewer proxies than workers)
+    worker_proxies = [proxies[i % len(proxies)] for i in range(num_workers)]
+
+    counter = [0]  # Mutable shared counter
+    lock = threading.Lock()
+
+    all_succeeded = []
+    all_failed = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = []
+        for worker_id in range(num_workers):
+            f = executor.submit(
+                _scrape_worker, worker_id, chunks[worker_id],
+                worker_proxies[worker_id], settings, counter, lock,
+                total, progress_callback
+            )
+            futures.append(f)
+
+        for f in concurrent.futures.as_completed(futures):
+            succeeded, failed = f.result()
+            all_succeeded.extend(succeeded)
+            all_failed.extend(failed)
+
+    if generate_pdf:
+        # Regenerate PDF from DB since parallel workers stored data directly
+        all_data = get_all_latest_from_db()
+        if all_data:
+            pdf_data = []
+            for p in all_data:
+                history = get_product_history(p['product_id'])
+                if history is not None and not history.empty:
+                    pdf_data.append({
+                        'name': _sanitize_for_pdf(p['product_name']),
+                        'latest': history.iloc[-1].to_dict(),
+                        'history': history
+                    })
+            if pdf_data:
+                create_combo_pdf_report(pdf_data)
+
+    print(f"\nDone: {len(all_succeeded)} succeeded, {len(all_failed)} failed")
+    if all_failed:
+        print(f"Failed products: {all_failed}")
+
+    return len(all_succeeded), all_failed
+
+
+def run_scrape(progress_callback=None, generate_pdf=True):
+    """Run the full scrape pipeline. Returns (succeeded_count, failed_list).
+
+    progress_callback: optional callable(current, total, product_name) for live status updates.
+    generate_pdf: if True, generate the PDF report after scraping.
+    """
+    import settings as app_settings
+
+    init_db()
+    if not check_chrome_installed():
+        return 0, []
+    products = load_products()
+    total = len(products)
+    print(f"Loaded {total} products")
+
+    if total == 0:
+        print("No products to scrape.")
+        return 0, []
+
+    s = app_settings.load_settings()
+    proxies = app_settings.load_proxies() if s.get('proxies_enabled') else []
+
+    # Use parallel if enabled and we have proxies
+    if s.get('parallel_enabled') and proxies and total > 1:
+        return _run_parallel_scrape(products, proxies, s, progress_callback, generate_pdf)
+    else:
+        return _scrape_sequential(products, s, proxies, progress_callback, generate_pdf)
 
 
 if __name__ == '__main__':

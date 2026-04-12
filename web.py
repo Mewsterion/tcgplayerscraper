@@ -10,6 +10,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 import scraperpdf
 import catalog
+import settings as app_settings
 
 
 def _lowest_ask(top_listings_json):
@@ -360,5 +361,41 @@ def create_app():
             return jsonify({"deleted": job_id})
         except Exception:
             return jsonify({"error": "Job not found"}), 404
+
+    # --- Settings ---
+
+    @app.route("/settings")
+    def settings_page():
+        return render_template("settings.html")
+
+    @app.route("/api/settings")
+    def api_settings_get():
+        return jsonify(app_settings.load_settings())
+
+    @app.route("/api/settings", methods=["POST"])
+    def api_settings_save():
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Request body required"}), 400
+        # Merge with defaults to ensure all keys exist
+        current = app_settings.load_settings()
+        current.update(data)
+        app_settings.save_settings(current)
+        return jsonify(current)
+
+    @app.route("/api/settings/proxies")
+    def api_settings_proxies_get():
+        content = app_settings.load_proxies_raw()
+        proxies = app_settings.load_proxies()
+        return jsonify({"content": content, "count": len(proxies)})
+
+    @app.route("/api/settings/proxies", methods=["POST"])
+    def api_settings_proxies_save():
+        data = request.get_json()
+        if not data or "content" not in data:
+            return jsonify({"error": "content required"}), 400
+        app_settings.save_proxies(data["content"])
+        proxies = app_settings.load_proxies()
+        return jsonify({"saved": True, "count": len(proxies)})
 
     return app

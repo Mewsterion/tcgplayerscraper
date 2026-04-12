@@ -44,5 +44,7 @@ CLAUDE.md
 *.csv
 *.db
 products.txt
+proxies.txt
+settings.json
 scraper_log.txt
 urls.txt
