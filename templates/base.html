@@ -70,6 +70,8 @@
                         el.textContent = `Done: ${data.succeeded}/${data.total}`;
                         el.title = `${data.succeeded} succeeded, ${data.failed.length} failed`;
                         btn.disabled = false;
+                        // Refresh dashboard data if on the dashboard page
+                        window.dispatchEvent(new CustomEvent('scrape-complete'));
                     } else {
                         el.textContent = '';
                         btn.disabled = false;

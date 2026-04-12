@@ -62,7 +62,7 @@
 {% endblock %}
 
 {% block content %}
-<div x-data="dashboardApp()" x-init="init()">
+<div x-data="dashboardApp()" x-init="init()" @scrape-complete.window="init()">
     <h3>Dashboard <small style="opacity:0.6" x-text="'(' + products.length + ' products)'"></small></h3>
 
     <div style="display:flex; gap:0.5rem; margin-bottom:1rem; align-items:center; flex-wrap:wrap;">
