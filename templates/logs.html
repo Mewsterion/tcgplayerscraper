@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Scrape Logs - TCGplayer Tracker{% endblock %}
+
+{% block head %}
+<style>
+    .log-table { font-size: 0.85rem; }
+    .log-table td, .log-table th { padding: 0.3rem 0.6rem; }
+    .status-success { color: #22c55e; }
+    .status-failed { color: #ef4444; }
+    .status-skipped { color: #f59e0b; }
+    .status-start, .status-end { color: #3b82f6; font-weight: 600; }
+    .log-controls { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+    .log-controls select, .log-controls button { margin: 0; padding: 0.3rem 0.6rem; font-size: 0.85rem; }
+    .empty-state { text-align: center; padding: 2rem; opacity: 0.5; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h3>Scrape Logs</h3>
+
+<div class="log-controls">
+    <label style="margin:0; font-size:0.85rem;">Show last</label>
+    <select id="log-limit" onchange="loadLogs()">
+        <option value="50">50</option>
+        <option value="200" selected>200</option>
+        <option value="500">500</option>
+        <option value="1000">1000</option>
+    </select>
+    <label style="margin:0; font-size:0.85rem;">entries</label>
+    <button class="outline" onclick="loadLogs()">Refresh</button>
+</div>
+
+<figure class="table-wrap" style="overflow:auto; max-height:calc(100vh - 12rem);">
+    <table class="log-table" role="grid">
+        <thead>
+            <tr>
+                <th style="position:sticky;top:0;background:var(--pico-card-background-color,#1a1a2e);z-index:5;">Time</th>
+                <th style="position:sticky;top:0;background:var(--pico-card-background-color,#1a1a2e);z-index:5;">Status</th>
+                <th style="position:sticky;top:0;background:var(--pico-card-background-color,#1a1a2e);z-index:5;">Product ID</th>
+                <th style="position:sticky;top:0;background:var(--pico-card-background-color,#1a1a2e);z-index:5;">Message</th>
+            </tr>
+        </thead>
+        <tbody id="log-body">
+            <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+        </tbody>
+    </table>
+</figure>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function loadLogs() {
+        const limit = document.getElementById('log-limit').value;
+        fetch('/api/logs?limit=' + limit)
+            .then(r => r.json())
+            .then(logs => {
+                const body = document.getElementById('log-body');
+                if (!logs.length) {
+                    body.innerHTML = '<tr><td colspan="4" class="empty-state">No logs yet. Run a scrape to generate logs.</td></tr>';
+                    return;
+                }
+                body.innerHTML = logs.map(l => {
+                    const statusClass = 'status-' + l.status;
+                    const time = new Date(l.timestamp).toLocaleString();
+                    return `<tr>
+                        <td>${esc(time)}</td>
+                        <td class="${statusClass}">${esc(l.status)}</td>
+                        <td>${l.product_id ? esc(l.product_id) : '-'}</td>
+                        <td>${esc(l.message || '')}</td>
+                    </tr>`;
+                }).join('');
+            });
+    }
+
+    function esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
+    }
+
+    loadLogs();
+</script>
+{% endblock %}

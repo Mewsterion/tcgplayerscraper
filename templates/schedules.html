@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}Schedules - TCGplayer Tracker{% endblock %}
+
+{% block head %}
+<style>
+    .schedule-form { max-width: 500px; }
+    .schedule-form select, .schedule-form input { margin-bottom: 0.5rem; }
+    .schedule-row {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--pico-muted-border-color);
+    }
+    .schedule-row:hover { background: var(--pico-card-background-color); }
+    .schedule-info { flex: 1; }
+    .schedule-type { font-weight: 600; text-transform: capitalize; }
+    .schedule-meta { font-size: 0.8rem; opacity: 0.7; }
+    .schedule-row button { margin: 0; padding: 0.2rem 0.6rem; font-size: 0.75rem; width: auto; }
+    .last-run { font-size: 0.8rem; opacity: 0.7; margin-top: 0.3rem; }
+    .time-inputs { display: flex; gap: 0.5rem; align-items: center; }
+    .time-inputs input { width: 5rem; margin: 0; }
+    .time-inputs select { width: auto; margin: 0; }
+    .cron-input { margin-top: 0.5rem; }
+    .empty-state { text-align: center; padding: 2rem; opacity: 0.5; }
+    #schedule-list { max-height: 400px; overflow-y: auto; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h3>Schedules</h3>
+
+<div class="schedule-form">
+    <h4>Create Schedule</h4>
+
+    <label>Job Type</label>
+    <select id="job-type">
+        <option value="scrape">Scrape Products</option>
+        <option value="catalog_refresh">Refresh Catalog</option>
+    </select>
+
+    <label>Frequency</label>
+    <select id="schedule-mode" onchange="updateScheduleForm()">
+        <option value="daily">Daily</option>
+        <option value="weekly">Weekly</option>
+        <option value="cron">Cron Expression</option>
+    </select>
+
+    <div id="daily-options">
+        <label>Time</label>
+        <div class="time-inputs">
+            <input type="number" id="hour" value="5" min="0" max="23" placeholder="HH">
+            <span>:</span>
+            <input type="number" id="minute" value="0" min="0" max="59" placeholder="MM">
+        </div>
+    </div>
+
+    <div id="weekly-options" style="display:none;">
+        <label>Day</label>
+        <select id="day-of-week">
+            <option value="mon">Monday</option>
+            <option value="tue">Tuesday</option>
+            <option value="wed">Wednesday</option>
+            <option value="thu">Thursday</option>
+            <option value="fri">Friday</option>
+            <option value="sat">Saturday</option>
+            <option value="sun">Sunday</option>
+        </select>
+        <label>Time</label>
+        <div class="time-inputs">
+            <input type="number" id="weekly-hour" value="5" min="0" max="23" placeholder="HH">
+            <span>:</span>
+            <input type="number" id="weekly-minute" value="0" min="0" max="59" placeholder="MM">
+        </div>
+    </div>
+
+    <div id="cron-options" style="display:none;" class="cron-input">
+        <label>Cron Expression <small style="opacity:0.6;">(minute hour day month day_of_week)</small></label>
+        <input type="text" id="cron-expr" placeholder="0 5 * * *">
+    </div>
+
+    <button onclick="createSchedule()" style="margin-top:0.5rem;">Create Schedule</button>
+    <span id="create-status" style="font-size:0.85rem; margin-left:0.5rem;"></span>
+</div>
+
+<h4 style="margin-top:2rem;">Active Schedules</h4>
+<div id="schedule-list">
+    <div class="empty-state">Loading...</div>
+</div>
+
+<div id="last-run-info" style="margin-top:1rem;"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const JOB_TYPE_LABELS = {
+        'scrape': 'Scrape Products',
+        'catalog_refresh': 'Refresh Catalog',
+    };
+
+    function updateScheduleForm() {
+        const mode = document.getElementById('schedule-mode').value;
+        document.getElementById('daily-options').style.display = mode === 'daily' ? '' : 'none';
+        document.getElementById('weekly-options').style.display = mode === 'weekly' ? '' : 'none';
+        document.getElementById('cron-options').style.display = mode === 'cron' ? '' : 'none';
+    }
+
+    function createSchedule() {
+        const jobType = document.getElementById('job-type').value;
+        const mode = document.getElementById('schedule-mode').value;
+        const body = { job_type: jobType, mode: mode };
+
+        if (mode === 'daily') {
+            body.hour = document.getElementById('hour').value;
+            body.minute = document.getElementById('minute').value;
+        } else if (mode === 'weekly') {
+            body.day_of_week = document.getElementById('day-of-week').value;
+            body.hour = document.getElementById('weekly-hour').value;
+            body.minute = document.getElementById('weekly-minute').value;
+        } else {
+            body.expression = document.getElementById('cron-expr').value;
+        }
+
+        const statusEl = document.getElementById('create-status');
+        statusEl.textContent = 'Creating...';
+
+        fetch('/api/schedules', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                statusEl.textContent = data.error;
+                statusEl.style.color = '#ef4444';
+            } else {
+                statusEl.textContent = 'Created';
+                statusEl.style.color = '#22c55e';
+                loadSchedules();
+                setTimeout(() => { statusEl.textContent = ''; }, 3000);
+            }
+        })
+        .catch(e => {
+            statusEl.textContent = 'Failed: ' + e;
+            statusEl.style.color = '#ef4444';
+        });
+    }
+
+    function deleteSchedule(jobId) {
+        if (!confirm('Delete this schedule?')) return;
+        fetch('/api/schedules/' + jobId, { method: 'DELETE' })
+            .then(r => r.json())
+            .then(() => loadSchedules());
+    }
+
+    function formatNextRun(iso) {
+        if (!iso) return 'N/A';
+        const d = new Date(iso);
+        return d.toLocaleString();
+    }
+
+    function formatSchedule(cronStr) {
+        // Parse "cron[key='val', key='val', ...]" into readable text
+        const m = cronStr.match(/cron\[(.+)\]/);
+        if (!m) return cronStr;
+        const parts = {};
+        m[1].split(',').forEach(p => {
+            const [k, v] = p.trim().split('=');
+            parts[k] = v.replace(/'/g, '');
+        });
+        const DAYS = {mon:'Monday',tue:'Tuesday',wed:'Wednesday',thu:'Thursday',fri:'Friday',sat:'Saturday',sun:'Sunday'};
+        const hour = parts.hour || '0';
+        const minute = parts.minute || '0';
+        const dow = parts.day_of_week;
+        const day = parts.day;
+        const month = parts.month;
+
+        // Format time
+        function fmtTime(h, min) {
+            if (h.includes('/')) {
+                const interval = h.split('/')[1];
+                return 'Every ' + interval + ' hours at :' + min.padStart(2, '0');
+            }
+            const hr = parseInt(h);
+            const ampm = hr >= 12 ? 'PM' : 'AM';
+            const h12 = hr === 0 ? 12 : hr > 12 ? hr - 12 : hr;
+            return h12 + ':' + min.padStart(2, '0') + ' ' + ampm;
+        }
+
+        const timeStr = fmtTime(hour, minute);
+
+        // Every N hours pattern
+        if (hour.includes('/')) return timeStr;
+
+        // Weekly
+        if (dow && dow !== '*') {
+            const dayName = DAYS[dow] || dow;
+            return 'Weekly on ' + dayName + ' at ' + timeStr;
+        }
+
+        // Monthly
+        if (day && day !== '*') {
+            return 'Monthly on day ' + day + ' at ' + timeStr;
+        }
+
+        // Daily
+        return 'Daily at ' + timeStr;
+    }
+
+    function loadSchedules() {
+        fetch('/api/schedules')
+            .then(r => r.json())
+            .then(data => {
+                const list = document.getElementById('schedule-list');
+                const jobs = data.jobs;
+
+                if (!jobs.length) {
+                    list.innerHTML = '<div class="empty-state">No active schedules. Create one above.</div>';
+                } else {
+                    list.innerHTML = jobs.map(j => `
+                        <div class="schedule-row">
+                            <div class="schedule-info">
+                                <div class="schedule-type">${esc(JOB_TYPE_LABELS[j.job_type] || j.job_type)}</div>
+                                <div class="schedule-meta">
+                                    ${esc(formatSchedule(j.schedule))}<br>
+                                    Next run: ${formatNextRun(j.next_run)}
+                                </div>
+                            </div>
+                            <button class="outline" style="color:#ef4444;border-color:#ef4444;"
+                                    onclick="deleteSchedule('${esc(j.id)}')">Delete</button>
+                        </div>
+                    `).join('');
+                }
+
+                // Last run info
+                const lastRun = data.last_run;
+                const infoEl = document.getElementById('last-run-info');
+                let html = '<h4>Last Scheduled Runs</h4>';
+                for (const [type, info] of Object.entries(lastRun)) {
+                    const label = JOB_TYPE_LABELS[type] || type;
+                    if (info.time) {
+                        html += `<div class="last-run"><strong>${esc(label)}:</strong> ${formatNextRun(info.time)} - ${esc(info.result || 'Unknown')}</div>`;
+                    } else {
+                        html += `<div class="last-run"><strong>${esc(label)}:</strong> Never run</div>`;
+                    }
+                }
+                infoEl.innerHTML = html;
+            });
+    }
+
+    function esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
+    }
+
+    loadSchedules();
+</script>
+{% endblock %}

@@ -1,0 +1,10 @@
+# HTTP proxies for scraping, one per line
+# Format: host:port:username:password
+# Lines starting with # are comments
+#
+# Example:
+# 192.168.1.1:8080:myuser:mypass123
+# 10.0.0.1:3128:user2:pass456
+#
+# Proxies without authentication (host:port only):
+# 192.168.1.1:8080

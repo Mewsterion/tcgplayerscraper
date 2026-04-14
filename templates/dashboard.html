@@ -1,0 +1,417 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - TCGplayer Tracker{% endblock %}
+
+{% block head %}
+<style>
+    th[data-sortable] { cursor: pointer; user-select: none; }
+    th[data-sortable]:hover { opacity: 0.8; }
+    .sort-arrow { font-size: 0.7em; margin-left: 0.3em; }
+    .col-dropdown { position: relative; display: inline-block; }
+    .col-dropdown-content {
+        display: none; position: absolute; right: 0; z-index: 10;
+        background: var(--pico-card-background-color, #1a1a2e);
+        border: 1px solid var(--pico-muted-border-color, #333);
+        border-radius: 0.25rem; padding: 0.5rem; min-width: 180px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .col-dropdown-content.open { display: block; }
+    .col-dropdown-content .col-row {
+        display: flex; align-items: center; padding: 0.15rem 0; font-size: 0.85rem;
+        gap: 0.3rem;
+    }
+    .col-dropdown-content label {
+        display: flex; align-items: center; flex: 1; margin: 0; padding: 0;
+        cursor: pointer; white-space: nowrap; font-size: 0.85rem;
+    }
+    .col-dropdown-content input[type="checkbox"] { margin-right: 0.4rem; }
+    .col-move-btn {
+        background: none; border: none; color: var(--pico-color, #ccc);
+        cursor: pointer; padding: 0 0.15rem; font-size: 0.7rem; line-height: 1;
+        opacity: 0.5; margin: 0;
+    }
+    .col-move-btn:hover { opacity: 1; }
+    .col-dropdown-content .col-reset {
+        display: block; margin-top: 0.4rem; padding-top: 0.4rem;
+        border-top: 1px solid var(--pico-muted-border-color, #333);
+        font-size: 0.8rem; text-align: center;
+    }
+    .col-dropdown-content .col-reset button {
+        background: none; border: none; color: var(--pico-primary, #5e8bca);
+        cursor: pointer; font-size: 0.8rem; padding: 0.2rem 0.4rem; margin: 0;
+        text-decoration: underline;
+    }
+    .col-dropdown-content .col-reset button:hover { opacity: 0.8; }
+    .loading-msg { opacity: 0.6; }
+    figure.table-wrap {
+        overflow: auto;
+        max-height: calc(100vh - 10rem);
+    }
+    thead th {
+        position: sticky; top: 0; z-index: 5;
+        background: var(--pico-card-background-color, #1a1a2e);
+    }
+    .table-footer { font-size: 0.8rem; opacity: 0.6; margin-top: 0.3rem; }
+    .row-checkbox { width: 1.1rem; height: 1.1rem; margin: 0; cursor: pointer; }
+    th.checkbox-col, td.checkbox-col { width: 2rem; text-align: center; padding: 0.3rem; }
+    .remove-btn {
+        margin: 0; padding: 0.4rem 0.8rem; font-size: 0.85rem;
+        background: #ef4444; border-color: #ef4444; color: #fff;
+    }
+    .remove-btn:hover { background: #dc2626; border-color: #dc2626; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div x-data="dashboardApp()" x-init="init()" @scrape-complete.window="init()">
+    <h3>Dashboard <small style="opacity:0.6" x-text="'(' + products.length + ' products)'"></small></h3>
+
+    <div style="display:flex; gap:0.5rem; margin-bottom:1rem; align-items:center; flex-wrap:wrap;">
+        <input type="search" x-model="searchQuery" placeholder="Search products..." style="margin:0; max-width:400px;">
+        <label style="margin:0; display:flex; align-items:center; gap:0.3rem; font-size:0.85rem; white-space:nowrap; cursor:pointer;">
+            <input type="checkbox" x-model="showAll" @change="init()" style="margin:0;">
+            Show all history
+        </label>
+        <div style="margin-left:auto; display:flex; gap:0.5rem; align-items:center;">
+        <button x-show="selectedIds.length > 0" x-cloak class="remove-btn"
+                @click="removeSelected()" x-text="'Remove ' + selectedIds.length + ' selected'"></button>
+        <div class="col-dropdown" @click.outside="showColumnMenu = false">
+            <button type="button" class="outline" style="margin:0; padding:0.4rem 0.8rem; font-size:0.85rem;"
+                    @click="showColumnMenu = !showColumnMenu">
+                Columns
+            </button>
+            <div class="col-dropdown-content" :class="{ open: showColumnMenu }">
+                <template x-for="(key, idx) in columnOrder" :key="key">
+                    <div class="col-row">
+                        <div style="display:flex; flex-direction:column;">
+                            <button class="col-move-btn" :disabled="idx === 0"
+                                    @click.stop="moveColumn(key, -1)">&#9650;</button>
+                            <button class="col-move-btn" :disabled="idx === columnOrder.length - 1"
+                                    @click.stop="moveColumn(key, 1)">&#9660;</button>
+                        </div>
+                        <label>
+                            <input type="checkbox" :checked="visibleColumns.includes(key)"
+                                   @change="toggleColumn(key)">
+                            <span x-text="columnLabel(key)"></span>
+                        </label>
+                    </div>
+                </template>
+                <div class="col-reset">
+                    <button @click.stop="resetPrefs()">Reset to defaults</button>
+                </div>
+            </div>
+        </div>
+        </div>
+    </div>
+
+    <template x-if="loading">
+        <p class="loading-msg">Loading...</p>
+    </template>
+
+    <template x-if="!loading && filteredProducts.length === 0">
+        <p>No products found. <span x-show="searchQuery">Try a different search, or </span><a href="/manage">add some product IDs</a> and run a scrape.</p>
+    </template>
+
+    <template x-if="!loading && filteredProducts.length > 0">
+        <figure class="table-wrap">
+            <table role="grid">
+                <thead>
+                    <tr>
+                        <th class="checkbox-col">
+                            <input type="checkbox" class="row-checkbox"
+                                   :checked="allSelected" @click.stop="toggleSelectAll()">
+                        </th>
+                        <template x-for="col in visibleColumnDefs" :key="col.key">
+                            <th data-sortable
+                                :style="col.align === 'right' ? 'text-align:right' : ''"
+                                @click="toggleSort(col.key)">
+                                <span x-text="col.label"></span>
+                                <span class="sort-arrow" x-show="sortColumn === col.key"
+                                      x-text="sortDirection === 'asc' ? '\u25B2' : '\u25BC'"></span>
+                            </th>
+                        </template>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="p in sortedFilteredProducts" :key="p.product_id">
+                        <tr style="cursor:pointer;" @click="window.location='/product/' + p.product_id">
+                            <td class="checkbox-col" @click.stop>
+                                <input type="checkbox" class="row-checkbox"
+                                       :checked="selectedIds.includes(p.product_id)"
+                                       @change="toggleSelect(p.product_id)">
+                            </td>
+                            <template x-for="col in visibleColumnDefs" :key="col.key">
+                                <td :style="col.align === 'right' ? 'text-align:right' : ''">
+                                    <template x-if="col.key === 'price_change'">
+                                        <span :class="{
+                                            'positive': p.price_change && p.price_change > 0,
+                                            'negative': p.price_change && p.price_change < 0,
+                                            'neutral': !p.price_change || p.price_change === 0
+                                        }" x-text="formatChange(p.price_change)"></span>
+                                    </template>
+                                    <template x-if="col.key === 'quantity_change'">
+                                        <span :class="{
+                                            'positive': p.quantity_change && p.quantity_change > 0,
+                                            'negative': p.quantity_change && p.quantity_change < 0,
+                                            'neutral': !p.quantity_change || p.quantity_change === 0
+                                        }" x-text="formatChange(p.quantity_change)"></span>
+                                    </template>
+                                    <template x-if="col.key !== 'price_change' && col.key !== 'quantity_change'">
+                                        <span x-text="formatCell(p, col.key)"></span>
+                                    </template>
+                                </td>
+                            </template>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </figure>
+        <p class="table-footer" x-text="tableFooter"></p>
+    </template>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function dashboardApp() {
+    const STORAGE_KEY = 'tcgtracker_dashboard_prefs';
+
+    const ALL_COLUMNS = [
+        { key: 'product_name',    label: 'Product',        align: 'left',  type: 'alpha' },
+        { key: 'market_price',    label: 'Market $',       align: 'right', type: 'dollar' },
+        { key: 'lowest_ask',      label: 'Low Ask',        align: 'right', type: 'numeric' },
+        { key: 'most_recent_sale',label: 'Last Sale',      align: 'right', type: 'dollar' },
+        { key: 'price_change',    label: 'Change',         align: 'right', type: 'numeric' },
+        { key: 'current_quantity',label: 'Qty',            align: 'right', type: 'numeric' },
+        { key: 'total_sold',      label: 'Total Sold',     align: 'right', type: 'numeric' },
+        { key: 'date',            label: 'Date',           align: 'left',  type: 'alpha' },
+        { key: 'listed_median',   label: 'Listed Median',  align: 'right', type: 'dollar' },
+        { key: 'current_sellers', label: 'Sellers',        align: 'right', type: 'numeric' },
+        { key: 'daily_sales',       label: 'Daily Sales',      align: 'right', type: 'numeric' },
+        { key: 'sell_through_rate', label: 'Sell-Through %',   align: 'right', type: 'numeric' },
+        { key: 'quantity_change',   label: 'Qty Change',       align: 'right', type: 'numeric' },
+    ];
+
+    const DEFAULT_ORDER = ALL_COLUMNS.map(c => c.key);
+
+    const DEFAULT_VISIBLE = [
+        'product_name', 'market_price', 'lowest_ask', 'most_recent_sale',
+        'price_change', 'current_quantity', 'total_sold', 'date'
+    ];
+
+    function loadPrefs() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) return JSON.parse(raw);
+        } catch (e) {}
+        return null;
+    }
+
+    function savePrefs(data) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch (e) {}
+    }
+
+    const prefs = loadPrefs();
+
+    return {
+        products: [],
+        loading: true,
+        showColumnMenu: false,
+        searchQuery: '',
+        showAll: false,
+        selectedIds: [],
+        allColumns: ALL_COLUMNS,
+        columnOrder: prefs?.columnOrder || [...DEFAULT_ORDER],
+        sortColumn: prefs?.sortColumn || 'product_name',
+        sortDirection: prefs?.sortDirection || 'asc',
+        visibleColumns: prefs?.visibleColumns || [...DEFAULT_VISIBLE],
+
+        get visibleColumnDefs() {
+            return this.columnOrder
+                .filter(key => this.visibleColumns.includes(key))
+                .map(key => ALL_COLUMNS.find(c => c.key === key))
+                .filter(Boolean);
+        },
+
+        get filteredProducts() {
+            const q = this.searchQuery.trim().toLowerCase();
+            if (!q) return this.products;
+            return this.products.filter(p =>
+                p.product_name.toLowerCase().includes(q) ||
+                String(p.product_id).includes(q)
+            );
+        },
+
+        get sortedFilteredProducts() {
+            const col = ALL_COLUMNS.find(c => c.key === this.sortColumn);
+            if (!col) return this.filteredProducts;
+            const dir = this.sortDirection === 'asc' ? 1 : -1;
+            return [...this.filteredProducts].sort((a, b) => {
+                const va = this.sortVal(a, col);
+                const vb = this.sortVal(b, col);
+                if (va === null && vb === null) return 0;
+                if (va === null) return 1;
+                if (vb === null) return -1;
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+                return 0;
+            });
+        },
+
+        get tableFooter() {
+            const shown = this.filteredProducts.length;
+            const total = this.products.length;
+            if (shown === total) return 'Showing ' + total + ' products';
+            return 'Showing ' + shown + ' of ' + total + ' products';
+        },
+
+        get allSelected() {
+            const visible = this.sortedFilteredProducts;
+            return visible.length > 0 && visible.every(p => this.selectedIds.includes(p.product_id));
+        },
+
+        toggleSelect(productId) {
+            const idx = this.selectedIds.indexOf(productId);
+            if (idx > -1) {
+                this.selectedIds.splice(idx, 1);
+            } else {
+                this.selectedIds.push(productId);
+            }
+        },
+
+        toggleSelectAll() {
+            const visible = this.sortedFilteredProducts;
+            if (this.allSelected) {
+                const visibleIds = new Set(visible.map(p => p.product_id));
+                this.selectedIds = this.selectedIds.filter(id => !visibleIds.has(id));
+            } else {
+                const current = new Set(this.selectedIds);
+                visible.forEach(p => current.add(p.product_id));
+                this.selectedIds = [...current];
+            }
+        },
+
+        async removeSelected() {
+            if (!confirm('Remove ' + this.selectedIds.length + ' product(s) from tracking?')) return;
+            const toRemove = [...this.selectedIds];
+            for (const id of toRemove) {
+                await fetch('/api/tracked/remove', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({product_id: id})
+                });
+            }
+            this.products = this.products.filter(p => !toRemove.includes(p.product_id));
+            this.selectedIds = [];
+        },
+
+        sortVal(row, col) {
+            const raw = row[col.key];
+            if (raw === null || raw === undefined || raw === '' || raw === 'N/A') return null;
+            if (col.type === 'numeric') {
+                const n = parseFloat(raw);
+                return isNaN(n) ? null : n;
+            }
+            if (col.type === 'dollar') {
+                const n = parseFloat(String(raw).replace('$', '').replace(',', ''));
+                return isNaN(n) ? null : n;
+            }
+            return String(raw).toLowerCase();
+        },
+
+        toggleSort(key) {
+            if (this.sortColumn === key) {
+                this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                this.sortColumn = key;
+                this.sortDirection = 'asc';
+            }
+            this.persistPrefs();
+        },
+
+        columnLabel(key) {
+            const col = ALL_COLUMNS.find(c => c.key === key);
+            return col ? col.label : key;
+        },
+
+        moveColumn(key, direction) {
+            const idx = this.columnOrder.indexOf(key);
+            const newIdx = idx + direction;
+            if (newIdx < 0 || newIdx >= this.columnOrder.length) return;
+            const order = [...this.columnOrder];
+            order.splice(idx, 1);
+            order.splice(newIdx, 0, key);
+            this.columnOrder = order;
+            this.persistPrefs();
+        },
+
+        toggleColumn(key) {
+            const idx = this.visibleColumns.indexOf(key);
+            if (idx > -1) {
+                if (this.visibleColumns.length > 1) {
+                    this.visibleColumns.splice(idx, 1);
+                }
+            } else {
+                this.visibleColumns.push(key);
+            }
+            this.persistPrefs();
+        },
+
+        persistPrefs() {
+            savePrefs({
+                sortColumn: this.sortColumn,
+                sortDirection: this.sortDirection,
+                visibleColumns: [...this.visibleColumns],
+                columnOrder: [...this.columnOrder]
+            });
+        },
+
+        resetPrefs() {
+            this.sortColumn = 'product_name';
+            this.sortDirection = 'asc';
+            this.visibleColumns = [...DEFAULT_VISIBLE];
+            this.columnOrder = [...DEFAULT_ORDER];
+            this.searchQuery = '';
+            try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+        },
+
+        formatCell(product, key) {
+            const val = product[key];
+            if (val === null || val === undefined || val === '') return 'N/A';
+            if (key === 'lowest_ask') {
+                return '$' + parseFloat(val).toFixed(2);
+            }
+            if (key === 'daily_sales') {
+                const n = parseFloat(val);
+                return isNaN(n) ? 'N/A' : n.toFixed(1);
+            }
+            if (key === 'sell_through_rate') {
+                const n = parseFloat(val);
+                return isNaN(n) ? 'N/A' : n.toFixed(1) + '%';
+            }
+            return val;
+        },
+
+        formatChange(val) {
+            if (!val || val === 0) return '0.00';
+            const n = parseFloat(val);
+            if (isNaN(n)) return '0.00';
+            return (n > 0 ? '+' : '') + n.toFixed(2);
+        },
+
+        async init() {
+            try {
+                const url = '/api/dashboard' + (this.showAll ? '?show_all=1' : '');
+                const resp = await fetch(url);
+                this.products = await resp.json();
+            } catch (e) {
+                console.error('Failed to load dashboard data:', e);
+                this.products = [];
+            }
+            this.loading = false;
+        }
+    };
+}
+</script>
+{% endblock %}

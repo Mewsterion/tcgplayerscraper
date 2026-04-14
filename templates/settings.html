@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}Settings - TCGplayer Tracker{% endblock %}
+
+{% block head %}
+<style>
+    .settings-section { margin-bottom: 1.5rem; padding: 1rem; border: 1px solid var(--pico-muted-border-color); border-radius: 0.5rem; }
+    .settings-section h4 { margin: 0 0 0.75rem 0; }
+    .setting-row { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; }
+    .setting-row label { margin: 0; flex: 1; }
+    .setting-row input[type="number"] { width: 5rem; margin: 0; padding: 0.3rem 0.5rem; text-align: center; }
+    .setting-row input[type="checkbox"] { margin: 0; }
+    .setting-desc { font-size: 0.8rem; opacity: 0.6; margin-top: 0.2rem; }
+    .proxy-section textarea { font-family: monospace; min-height: 150px; margin-top: 0.5rem; }
+    .proxy-count { font-size: 0.85rem; opacity: 0.7; }
+    #save-status { font-size: 0.85rem; margin-left: 0.5rem; }
+    .save-bar { display: flex; align-items: center; margin-top: 1rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h3>Settings</h3>
+
+<div class="settings-section">
+    <h4>Proxy Configuration</h4>
+    <div class="setting-row">
+        <label for="proxies_enabled">Enable proxies</label>
+        <input type="checkbox" id="proxies_enabled" role="switch" onchange="updateParallelState()">
+    </div>
+    <div class="setting-desc">Route scraping requests through HTTP proxies to avoid rate limits.</div>
+    <div style="margin-top:0.75rem;">
+        <label>Proxy List <span class="proxy-count" id="proxy-count"></span></label>
+        <div class="setting-desc">One proxy per line. Format: <code>host:port:username:password</code> or <code>host:port</code></div>
+        <textarea id="proxy-list" class="proxy-section" placeholder="192.168.1.1:8080:user:pass123"></textarea>
+        <button class="outline" style="margin:0.5rem 0 0;padding:0.3rem 0.8rem;font-size:0.85rem;" onclick="saveProxies()">Save Proxies</button>
+        <span id="proxy-save-status" style="font-size:0.85rem;margin-left:0.5rem;"></span>
+    </div>
+</div>
+
+<div class="settings-section">
+    <h4>Parallel Scraping</h4>
+    <div class="setting-row">
+        <label for="parallel_enabled">Enable parallel scraping</label>
+        <input type="checkbox" id="parallel_enabled" role="switch" onchange="updateParallelState()">
+    </div>
+    <div class="setting-desc">Run multiple Chrome instances simultaneously. Requires proxies to be enabled.</div>
+    <div id="parallel-warning" style="display:none;color:#ef4444;font-size:0.8rem;margin-top:0.3rem;">Proxies must be enabled for parallel scraping to work.</div>
+    <div class="setting-row" style="margin-top:0.5rem;">
+        <label for="parallel_max_workers">Max workers</label>
+        <input type="number" id="parallel_max_workers" min="2" max="10" value="3">
+    </div>
+    <div class="setting-desc">Number of Chrome instances to run in parallel (limited by available proxies).</div>
+</div>
+
+<div class="settings-section">
+    <h4>User Agent Rotation</h4>
+    <div class="setting-row">
+        <label for="ua_rotation_enabled">Enable UA rotation</label>
+        <input type="checkbox" id="ua_rotation_enabled" role="switch">
+    </div>
+    <div class="setting-desc">Randomize browser user agent string on each session to reduce fingerprinting.</div>
+</div>
+
+<div class="settings-section">
+    <h4>Resume on Failure</h4>
+    <div class="setting-row">
+        <label for="resume_enabled">Enable resume</label>
+        <input type="checkbox" id="resume_enabled" role="switch">
+    </div>
+    <div class="setting-desc">Skip products that have already been scraped today. Useful for restarting interrupted scrapes.</div>
+</div>
+
+<div class="settings-section">
+    <h4>Rate Limiting</h4>
+    <div class="setting-row">
+        <label>Delay between requests (seconds)</label>
+        <div style="display:flex;gap:0.3rem;align-items:center;">
+            <input type="number" id="delay_min" min="0" max="30" step="0.5" value="2">
+            <span>to</span>
+            <input type="number" id="delay_max" min="0" max="30" step="0.5" value="4">
+        </div>
+    </div>
+    <div class="setting-desc">Random delay range between scraping each product.</div>
+    <div class="setting-row" style="margin-top:0.5rem;">
+        <label for="retry_attempts">Retry attempts</label>
+        <input type="number" id="retry_attempts" min="0" max="5" value="2">
+    </div>
+    <div class="setting-desc">Number of retries per product on failure (with exponential backoff).</div>
+    <div class="setting-row" style="margin-top:0.5rem;">
+        <label for="session_rotate_every">Session rotation interval</label>
+        <input type="number" id="session_rotate_every" min="5" max="500" value="50">
+    </div>
+    <div class="setting-desc">Restart Chrome every N products to reduce detection.</div>
+</div>
+
+<div class="settings-section">
+    <h4>Chrome</h4>
+    <div class="setting-row">
+        <label for="chrome_binary_path">Chrome binary path</label>
+    </div>
+    <input type="text" id="chrome_binary_path" placeholder="Leave blank for auto-detect" style="font-family:monospace; font-size:0.85rem;">
+    <div class="setting-desc">Override if Chrome isn't found automatically. Example: <code>C:\Program Files\Google\Chrome\Application\chrome.exe</code></div>
+</div>
+
+<div class="save-bar">
+    <button onclick="saveSettings()">Save Settings</button>
+    <span id="save-status"></span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const TOGGLE_FIELDS = ['proxies_enabled', 'parallel_enabled', 'ua_rotation_enabled', 'resume_enabled'];
+    const NUMBER_FIELDS = ['parallel_max_workers', 'retry_attempts', 'session_rotate_every'];
+    const TEXT_FIELDS = ['chrome_binary_path'];
+
+    function updateParallelState() {
+        const proxiesOn = document.getElementById('proxies_enabled').checked;
+        const parallelCheck = document.getElementById('parallel_enabled');
+        const warning = document.getElementById('parallel-warning');
+        const workersInput = document.getElementById('parallel_max_workers');
+
+        if (!proxiesOn) {
+            parallelCheck.checked = false;
+            parallelCheck.disabled = true;
+            workersInput.disabled = true;
+            warning.style.display = 'block';
+        } else {
+            parallelCheck.disabled = false;
+            workersInput.disabled = !parallelCheck.checked;
+            warning.style.display = 'none';
+        }
+    }
+
+    function loadSettings() {
+        fetch('/api/settings')
+            .then(r => r.json())
+            .then(data => {
+                TOGGLE_FIELDS.forEach(f => {
+                    document.getElementById(f).checked = data[f] || false;
+                });
+                NUMBER_FIELDS.forEach(f => {
+                    document.getElementById(f).value = data[f];
+                });
+                const delay = data.delay_between_requests || [2, 4];
+                document.getElementById('delay_min').value = delay[0];
+                document.getElementById('delay_max').value = delay[1];
+                TEXT_FIELDS.forEach(f => {
+                    document.getElementById(f).value = data[f] || '';
+                });
+                updateParallelState();
+            });
+
+        fetch('/api/settings/proxies')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('proxy-list').value = data.content;
+                document.getElementById('proxy-count').textContent = '(' + data.count + ' proxies loaded)';
+            });
+    }
+
+    function saveSettings() {
+        const settings = {};
+        TOGGLE_FIELDS.forEach(f => {
+            settings[f] = document.getElementById(f).checked;
+        });
+        NUMBER_FIELDS.forEach(f => {
+            settings[f] = parseInt(document.getElementById(f).value) || 0;
+        });
+        settings.delay_between_requests = [
+            parseFloat(document.getElementById('delay_min').value) || 2,
+            parseFloat(document.getElementById('delay_max').value) || 4,
+        ];
+        TEXT_FIELDS.forEach(f => {
+            settings[f] = document.getElementById(f).value.trim();
+        });
+
+        const statusEl = document.getElementById('save-status');
+        statusEl.textContent = 'Saving...';
+        statusEl.style.color = '';
+
+        fetch('/api/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(settings)
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                statusEl.textContent = data.error;
+                statusEl.style.color = '#ef4444';
+            } else {
+                statusEl.textContent = 'Saved';
+                statusEl.style.color = '#22c55e';
+                setTimeout(() => { statusEl.textContent = ''; }, 3000);
+            }
+        });
+    }
+
+    function saveProxies() {
+        const content = document.getElementById('proxy-list').value;
+        const statusEl = document.getElementById('proxy-save-status');
+        statusEl.textContent = 'Saving...';
+
+        fetch('/api/settings/proxies', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({content: content})
+        })
+        .then(r => r.json())
+        .then(data => {
+            statusEl.textContent = 'Saved';
+            statusEl.style.color = '#22c55e';
+            document.getElementById('proxy-count').textContent = '(' + data.count + ' proxies loaded)';
+            setTimeout(() => { statusEl.textContent = ''; }, 3000);
+        });
+    }
+
+    loadSettings();
+</script>
+{% endblock %}

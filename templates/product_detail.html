@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block title %}Product Detail - TCGplayer Tracker{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .stat-card { background: var(--pico-card-background-color); padding: 0.75rem; border-radius: var(--pico-border-radius); }
+    .stat-card .label { font-size: 0.75rem; opacity: 0.7; }
+    .stat-card .value { font-size: 1.2rem; font-weight: bold; }
+    .detail-table { font-size: 0.8rem; }
+    .detail-table td, .detail-table th { padding: 0.3rem 0.5rem; }
+    .loading-msg { opacity: 0.6; }
+    .chart-wrap { max-height: 350px; margin-bottom: 2rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div x-data="productDetail()" x-init="init()">
+    <p><a href="/">&larr; Back to Dashboard</a></p>
+
+    <template x-if="loading">
+        <p class="loading-msg">Loading product data...</p>
+    </template>
+
+    <template x-if="!loading && !product">
+        <p>Product not found.</p>
+    </template>
+
+    <template x-if="!loading && product">
+        <div>
+            <h3 x-text="product.product_name"></h3>
+            <p style="opacity:0.6;">
+                Product ID: <span x-text="product.product_id"></span> |
+                Last updated: <span x-text="product.date"></span>
+            </p>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="label">Market Price</div>
+                    <div class="value" x-text="product.market_price || 'N/A'"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Price Change</div>
+                    <div class="value" :class="{
+                        'positive': product.price_change > 0,
+                        'negative': product.price_change < 0
+                    }" x-text="formatChange(product.price_change)"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Most Recent Sale</div>
+                    <div class="value" x-text="product.most_recent_sale || 'N/A'"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Listed Median</div>
+                    <div class="value" x-text="product.listed_median || 'N/A'"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Quantity</div>
+                    <div class="value" x-text="product.current_quantity || 'N/A'"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Total Sold</div>
+                    <div class="value" x-text="product.total_sold || 'N/A'"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Sellers</div>
+                    <div class="value" x-text="product.current_sellers || 'N/A'"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Daily Sales</div>
+                    <div class="value" x-text="product.daily_sales ? Math.round(product.daily_sales) : '0'"></div>
+                </div>
+            </div>
+
+            <template x-if="history.length > 1">
+                <div>
+                    <h4>Price History</h4>
+                    <div class="chart-wrap">
+                        <canvas id="priceChart"></canvas>
+                    </div>
+                </div>
+            </template>
+
+            <template x-if="recentSales.length > 0">
+                <div>
+                    <h4>Recent Sales</h4>
+                    <figure style="overflow-x:auto;">
+                        <table class="detail-table" role="grid">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Condition</th>
+                                    <th style="text-align:right">Price</th>
+                                    <th style="text-align:right">Qty</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="s in recentSales" :key="s.date + s.price">
+                                    <tr>
+                                        <td x-text="s.date || ''"></td>
+                                        <td x-text="s.condition || ''"></td>
+                                        <td style="text-align:right" x-text="s.price || ''"></td>
+                                        <td style="text-align:right" x-text="s.qty || ''"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </figure>
+                </div>
+            </template>
+
+            <template x-if="topListings.length > 0">
+                <div>
+                    <h4>Active Listings</h4>
+                    <figure style="overflow-x:auto;">
+                        <table class="detail-table" role="grid">
+                            <thead>
+                                <tr>
+                                    <th style="text-align:right">Price</th>
+                                    <th style="text-align:right">Qty</th>
+                                    <th>Condition</th>
+                                    <th>Seller</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="l in topListings" :key="l.price + l.seller">
+                                    <tr>
+                                        <td style="text-align:right" x-text="l.price || ''"></td>
+                                        <td style="text-align:right" x-text="l.qty || ''"></td>
+                                        <td x-text="l.condition || ''"></td>
+                                        <td x-text="l.seller || ''"></td>
+                                        <td x-text="l.direct ? 'Direct' : (l.verified ? 'Verified' : 'Standard')"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </figure>
+                </div>
+            </template>
+        </div>
+    </template>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function productDetail() {
+    return {
+        product: null,
+        history: [],
+        recentSales: [],
+        topListings: [],
+        loading: true,
+        chart: null,
+
+        formatChange(val) {
+            if (!val || val === 0) return '0.00';
+            const n = parseFloat(val);
+            if (isNaN(n)) return '0.00';
+            return (n > 0 ? '+' : '') + n.toFixed(2);
+        },
+
+        parseJson(raw) {
+            if (!raw) return [];
+            try {
+                return typeof raw === 'string' ? JSON.parse(raw) : raw;
+            } catch (e) { return []; }
+        },
+
+        buildChart() {
+            this.$nextTick(() => {
+                const canvas = document.getElementById('priceChart');
+                if (!canvas || this.history.length < 2) return;
+
+                const labels = this.history.map(h => h['Date']);
+                const prices = this.history.map(h => {
+                    const v = String(h['Market Price'] || '').replace('$', '').replace(',', '');
+                    return parseFloat(v) || null;
+                });
+                const sales = this.history.map(h => {
+                    const v = String(h['Most Recent Sale'] || '').replace('$', '').replace(',', '');
+                    return parseFloat(v) || null;
+                });
+
+                if (this.chart) this.chart.destroy();
+                this.chart = new Chart(canvas, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            { label: 'Market Price', data: prices, borderColor: '#3b82f6', tension: 0.2, pointRadius: 2 },
+                            { label: 'Most Recent Sale', data: sales, borderColor: '#f59e0b', tension: 0.2, pointRadius: 2 },
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        interaction: { intersect: false, mode: 'index' },
+                        scales: { y: { beginAtZero: false } },
+                        plugins: { legend: { position: 'top' } }
+                    }
+                });
+            });
+        },
+
+        async init() {
+            const productId = '{{ product_id }}';
+            try {
+                const resp = await fetch('/api/product/' + productId);
+                if (!resp.ok) { this.loading = false; return; }
+                const data = await resp.json();
+                this.product = data.product;
+                this.history = data.history || [];
+                this.recentSales = this.parseJson(this.product.recent_sales);
+                this.topListings = this.parseJson(this.product.top_listings);
+            } catch (e) {
+                console.error('Failed to load product:', e);
+            }
+            this.loading = false;
+            if (this.history.length > 1) {
+                this.buildChart();
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

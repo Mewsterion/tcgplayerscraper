@@ -25,6 +25,7 @@ MANIFEST
 
 # Virtual Env
 venv/
+.venv/
 env/
 ENV/
 .env
@@ -34,9 +35,16 @@ ENV/
 .idea/
 .vs/
 
+# Claude
+CLAUDE.md
+
 # Project Specific
 *.pdf
 *.png
 *.csv
+*.db
+products.txt
+proxies.txt
+settings.json
 scraper_log.txt
 urls.txt
