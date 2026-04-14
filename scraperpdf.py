@@ -833,7 +833,13 @@ def generate_pdf_from_db(output_path=None):
     conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
 
-    # Get distinct product IDs
+    # Filter to tracked products from products.txt
+    tracked_ids = set()
+    for entry in load_products():
+        pid, _ = normalize_product(entry)
+        if pid:
+            tracked_ids.add(str(pid))
+
     rows = conn.execute('''
         SELECT p.product_id, p.product_name FROM price_history p
         INNER JOIN (
@@ -842,6 +848,9 @@ def generate_pdf_from_db(output_path=None):
         ) latest ON p.id = latest.max_id
         ORDER BY p.product_name
     ''').fetchall()
+
+    if tracked_ids:
+        rows = [r for r in rows if str(r['product_id']) in tracked_ids]
 
     if not rows:
         conn.close()
