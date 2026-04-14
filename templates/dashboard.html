@@ -186,8 +186,9 @@ function dashboardApp() {
         { key: 'date',            label: 'Date',           align: 'left',  type: 'alpha' },
         { key: 'listed_median',   label: 'Listed Median',  align: 'right', type: 'dollar' },
         { key: 'current_sellers', label: 'Sellers',        align: 'right', type: 'numeric' },
-        { key: 'daily_sales',     label: 'Daily Sales',    align: 'right', type: 'numeric' },
-        { key: 'quantity_change', label: 'Qty Change',     align: 'right', type: 'numeric' },
+        { key: 'daily_sales',       label: 'Daily Sales',      align: 'right', type: 'numeric' },
+        { key: 'sell_through_rate', label: 'Sell-Through %',   align: 'right', type: 'numeric' },
+        { key: 'quantity_change',   label: 'Qty Change',       align: 'right', type: 'numeric' },
     ];
 
     const DEFAULT_ORDER = ALL_COLUMNS.map(c => c.key);
@@ -384,6 +385,10 @@ function dashboardApp() {
             if (key === 'daily_sales') {
                 const n = parseFloat(val);
                 return isNaN(n) ? 'N/A' : n.toFixed(1);
+            }
+            if (key === 'sell_through_rate') {
+                const n = parseFloat(val);
+                return isNaN(n) ? 'N/A' : n.toFixed(1) + '%';
             }
             return val;
         },

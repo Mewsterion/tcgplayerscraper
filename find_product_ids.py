@@ -26,7 +26,7 @@ PRODUCT_NAMES = [
     "Blooming Waters Premium Collection",
     "Paldean Fates Great Tusk ex & Iron Treads ex Premium Collection",
     "Unova Heavy Hitters Premium Collection",
-    "First Partner Illustration Collection Series 1",
+    "First Partner Illustration Collection (Series 1)",
 ]
 # ---------------------------------------------------------------
 
@@ -48,8 +48,10 @@ def find_product_url(name, driver, wait):
     links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/product/']")
     for link in links:
         href = link.get_attribute('href') or ''
-        link_text = link.text.strip()
-        if link_text.lower() != name.lower():
+        # TCGplayer anchor text is multiline: "Set Name\nProduct Name\nlistings..."
+        # Check each line for an exact match against the product name
+        lines = [l.strip() for l in link.text.split('\n') if l.strip()]
+        if not any(l.lower() == name.lower() for l in lines):
             continue
         m = re.search(r'tcgplayer\.com/product/(\d+)', href)
         if m:

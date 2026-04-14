@@ -196,6 +196,14 @@ def create_app():
         products = scraperpdf.get_all_latest_from_db()
         for p in products:
             p['lowest_ask'] = _lowest_ask(p.get('top_listings'))
+            # Sell-through rate: daily sales / current listings quantity
+            daily = p.get('daily_sales') or 0
+            qty = p.get('current_quantity') or 0
+            try:
+                daily, qty = float(daily), float(qty)
+                p['sell_through_rate'] = round((daily / qty) * 100, 1) if qty > 0 else 0.0
+            except (ValueError, TypeError):
+                p['sell_through_rate'] = 0.0
             # Drop bulky JSON fields not needed for the table
             p.pop('top_listings', None)
             p.pop('recent_sales', None)
@@ -250,7 +258,8 @@ def create_app():
         output = io.StringIO()
         fields = ['product_id', 'product_name', 'date', 'market_price', 'lowest_ask',
                   'most_recent_sale', 'listed_median', 'price_change', 'current_quantity',
-                  'quantity_change', 'current_sellers', 'total_sold', 'daily_sales']
+                  'quantity_change', 'current_sellers', 'total_sold', 'daily_sales',
+                  'sell_through_rate']
         writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(products)

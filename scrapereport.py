@@ -4,20 +4,12 @@
 # To fix this, please run the following command in your terminal before running the script:
 # pip install setuptools
 
-import argparse
-import concurrent.futures
 import json
-import shutil
-import tempfile
-import threading
 import time
 import re
-import random
-import sqlite3
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-import sys
 from datetime import datetime
 from bs4 import BeautifulSoup
 
@@ -30,73 +22,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 from fpdf import FPDF, XPos, YPos
 
-PRODUCTS_FILE = 'products.txt'
-DB_FILE = 'tcgplayer.db'
-DEFAULT_PDF_OUTPUT = 'TCGplayer_Combo_Report.pdf'
-
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-
-def _db_path():
-    return os.path.join(_BASE_DIR, DB_FILE)
-
-
-_HISTORY_SELECT = '''SELECT date as Date, market_price as "Market Price", most_recent_sale as "Most Recent Sale",
-    listed_median as "Listed Median", current_quantity as "Current Quantity",
-    current_sellers as "Current Sellers", sold_yesterday as "Sold Yesterday",
-    total_sold as "Total Sold", recent_sales as "Recent Sales", top_listings as "Top Listings",
-    price_change as "Price Change", quantity_change as "Quantity Change",
-    daily_sales as "Daily Sales"
-FROM price_history WHERE product_id = ? ORDER BY id'''
-
-# Fallback list used when products.txt does not exist
-PRODUCTS = [
-    624679,
-    668496,
-    672394,
-    528038,
-    593355,
-    600518,
-    654213,
-    502000,
-    247646,
-    654137,
-    # Accepts product IDs (e.g. 624679) or full URLs (e.g. 'https://www.tcgplayer.com/product/624679/')
+URLS = [
+    'https://www.tcgplayer.com/product/624679/'
 ]
-
-
-def _ensure_products_file():
-    """Create products.txt from the example file if it doesn't exist."""
-    path = os.path.join(_BASE_DIR, PRODUCTS_FILE)
-    if os.path.isfile(path):
-        return
-    example_path = os.path.join(_BASE_DIR, PRODUCTS_FILE + '.example')
-    if os.path.isfile(example_path):
-        shutil.copy2(example_path, path)
-        print(f"Created {PRODUCTS_FILE} from {PRODUCTS_FILE}.example")
-    else:
-        with open(path, 'w') as f:
-            f.write("# Add product IDs here, one per line. See products.txt.example for format.\n")
-        print(f"Created empty {PRODUCTS_FILE}")
-
-
-def load_products():
-    """Load products from PRODUCTS_FILE, creating it if needed.
-    Supports one entry per line, comma-separated entries, or a mix of both.
-    Lines starting with # are ignored."""
-    _ensure_products_file()
-    path = os.path.join(_BASE_DIR, PRODUCTS_FILE)
-    entries = []
-    with open(path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            for part in line.split(','):
-                part = part.strip()
-                if part:
-                    entries.append(part)
-    return entries
 
 # Number of recent sales / top listings to store per product
 RECENT_SALES_COUNT = 10
@@ -106,51 +34,8 @@ LISTING_COUNT = 6
 # product — accessories, loose packs, opened shells, foreign variants, etc.
 MIN_LISTING_PRICE_PCT = 0.50
 
-# Rate limiting
-DELAY_BETWEEN_REQUESTS = (2, 4)   # random delay range in seconds between scrapes
-RETRY_ATTEMPTS = 2                 # number of retries on failure
-RETRY_BACKOFF = 10                 # seconds to wait before first retry (doubles each attempt)
-SESSION_ROTATE_EVERY = 50          # restart Chrome every N products
-
-DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-]
-
-
-def _random_ua():
-    """Return a random user agent string."""
-    return random.choice(USER_AGENTS)
-
-
-_UNICODE_REPLACEMENTS = {
-    '\u2019': "'", '\u2018': "'",
-    '\u201c': '"', '\u201d': '"',
-    '\u2013': '-', '\u2014': '-',
-    '\u2026': '...',
-}
-
-
-def _sanitize_for_pdf(text):
-    """Replace Unicode characters that Helvetica/Latin-1 can't render with ASCII equivalents."""
-    for old, new in _UNICODE_REPLACEMENTS.items():
-        text = text.replace(old, new)
-    return text.encode('latin-1', errors='replace').decode('latin-1')
-
 
 class PDF(FPDF):
-    def normalize_text(self, text):
-        text = _sanitize_for_pdf(text)
-        return super().normalize_text(text)
-
     def header(self):
         self.set_font('Helvetica', 'B', 12)
         self.cell(0, 10, 'TCGplayer Daily Market Report', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
@@ -162,16 +47,9 @@ class PDF(FPDF):
         self.cell(0, 10, f'Page {self.page_no()}', align='C')
 
 
-def normalize_product(entry):
-    """Accept a product ID (int or str) or a full TCGplayer URL.
-    Returns (product_id, url) tuple."""
-    s = str(entry).strip().rstrip('/')
-    if s.isdigit():
-        return s, f'https://www.tcgplayer.com/product/{s}/'
-    m = re.search(r'/product/(\d+)', s)
-    if m:
-        return m.group(1), entry if isinstance(entry, str) else str(entry)
-    return None, entry
+def extract_product_id(url):
+    m = re.search(r'/product/(\d+)', url)
+    return m.group(1) if m else None
 
 
 def get_api_data_from_network_logs(driver, product_id):
@@ -508,11 +386,12 @@ def parse_recent_sales_response(api_response):
     return sales
 
 
-def scrape_product_data(product_id, url, driver):
+def scrape_product_data(url, driver):
     """
     Scrapes a TCGplayer product page. Tries multiple strategies to get recent sales.
     """
     try:
+        product_id = extract_product_id(url)
         driver.get(url)
         wait = WebDriverWait(driver, 30)
         wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "section.product-details__price-guide")))
@@ -667,68 +546,15 @@ def scrape_product_data(product_id, url, driver):
         return None, None
 
 
-def init_db():
-    """Create the price_history and scrape_log tables if they don't exist."""
-    conn = sqlite3.connect(_db_path())
-    conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id TEXT NOT NULL,
-        product_name TEXT NOT NULL,
-        date TEXT NOT NULL,
-        market_price TEXT,
-        most_recent_sale TEXT,
-        listed_median TEXT,
-        current_quantity TEXT,
-        current_sellers TEXT,
-        sold_yesterday TEXT,
-        total_sold TEXT,
-        recent_sales TEXT,
-        top_listings TEXT,
-        price_change REAL DEFAULT 0.0,
-        quantity_change REAL DEFAULT 0.0,
-        daily_sales REAL DEFAULT 0.0
-    )''')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_product_id ON price_history(product_id)')
-    conn.execute('''CREATE TABLE IF NOT EXISTS scrape_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT NOT NULL,
-        product_id TEXT,
-        status TEXT NOT NULL,
-        message TEXT
-    )''')
-    conn.commit()
-    conn.close()
-
-
-def log_scrape(product_id, status, message=""):
-    """Log a scrape attempt to the scrape_log table."""
-    conn = sqlite3.connect(_db_path())
-    conn.execute(
-        'INSERT INTO scrape_log (timestamp, product_id, status, message) VALUES (?, ?, ?, ?)',
-        (datetime.now().isoformat(), str(product_id) if product_id else None, status, message)
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_scrape_logs(limit=200):
-    """Return recent scrape log entries."""
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        'SELECT * FROM scrape_log ORDER BY id DESC LIMIT ?', (limit,)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def update_data(product_id, product_name, new_data):
+def update_data(product_name, new_data):
     """
-    Append new data to the SQLite database and compute day-over-day changes.
-    Returns a DataFrame of the product's full history.
+    Append new data to the product CSV and compute day-over-day changes.
     """
     if not new_data or not product_name:
         return None
+
+    safe_name = "".join(c for c in product_name if c.isalnum() or c in (' ', '_')).rstrip()
+    csv_file = f"{safe_name}.csv"
 
     new_data['Price Change'] = 0.0
     new_data['Quantity Change'] = 0.0
@@ -737,145 +563,30 @@ def update_data(product_id, product_name, new_data):
     def to_num(val):
         return pd.to_numeric(str(val).replace('$', '').replace(',', ''), errors='coerce')
 
-    conn = sqlite3.connect(_db_path())
+    if os.path.exists(csv_file):
+        df_old = pd.read_csv(csv_file)
+        if not df_old.empty:
+            last = df_old.iloc[-1]
 
-    # Get previous row for day-over-day calculations
-    prev = conn.execute(
-        'SELECT market_price, current_quantity, total_sold FROM price_history WHERE product_id = ? ORDER BY id DESC LIMIT 1',
-        (str(product_id),)
-    ).fetchone()
+            last_price, new_price = to_num(last.get('Market Price', 0)), to_num(new_data['Market Price'])
+            if pd.notna(last_price) and pd.notna(new_price):
+                new_data['Price Change'] = new_price - last_price
 
-    if prev:
-        last_price, new_price = to_num(prev[0]), to_num(new_data['Market Price'])
-        if pd.notna(last_price) and pd.notna(new_price):
-            new_data['Price Change'] = new_price - last_price
+            last_qty, new_qty = to_num(last.get('Current Quantity', 0)), to_num(new_data['Current Quantity'])
+            if pd.notna(last_qty) and pd.notna(new_qty):
+                new_data['Quantity Change'] = new_qty - last_qty
 
-        last_qty, new_qty = to_num(prev[1]), to_num(new_data['Current Quantity'])
-        if pd.notna(last_qty) and pd.notna(new_qty):
-            new_data['Quantity Change'] = new_qty - last_qty
+            last_sold = to_num(last.get('Total Sold', 0))
+            new_sold = to_num(new_data.get('Total Sold', 0))
+            if pd.notna(last_sold) and pd.notna(new_sold) and new_sold >= last_sold:
+                new_data['Daily Sales'] = new_sold - last_sold
 
-        last_sold, new_sold = to_num(prev[2]), to_num(new_data.get('Total Sold', 0))
-        if pd.notna(last_sold) and pd.notna(new_sold) and new_sold >= last_sold:
-            new_data['Daily Sales'] = new_sold - last_sold
+        df_combined = pd.concat([df_old, pd.DataFrame([new_data])], ignore_index=True)
+    else:
+        df_combined = pd.DataFrame([new_data])
 
-    conn.execute(
-        '''INSERT INTO price_history
-           (product_id, product_name, date, market_price, most_recent_sale, listed_median,
-            current_quantity, current_sellers, sold_yesterday, total_sold,
-            recent_sales, top_listings, price_change, quantity_change, daily_sales)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        (
-            str(product_id),
-            product_name,
-            new_data['Date'],
-            new_data['Market Price'],
-            new_data['Most Recent Sale'],
-            new_data['Listed Median'],
-            new_data['Current Quantity'],
-            new_data['Current Sellers'],
-            new_data['Sold Yesterday'],
-            new_data['Total Sold'],
-            new_data.get('Recent Sales', '[]'),
-            new_data.get('Top Listings', '[]'),
-            new_data['Price Change'],
-            new_data['Quantity Change'],
-            new_data['Daily Sales'],
-        )
-    )
-    conn.commit()
-
-    df = pd.read_sql_query(_HISTORY_SELECT, conn, params=(str(product_id),))
-    conn.close()
-    return df
-
-
-def get_all_latest_from_db():
-    """Return a list of dicts with the latest row per product_id."""
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute('''
-        SELECT p.product_id, p.product_name, p.date, p.market_price, p.most_recent_sale,
-               p.listed_median, p.current_quantity, p.current_sellers, p.total_sold,
-               p.top_listings, p.price_change, p.quantity_change, p.daily_sales
-        FROM price_history p
-        INNER JOIN (
-            SELECT product_id, MAX(id) as max_id
-            FROM price_history GROUP BY product_id
-        ) latest ON p.id = latest.max_id
-        ORDER BY p.product_name
-    ''').fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_product_history(product_id):
-    """Return full history DataFrame for a single product."""
-    conn = sqlite3.connect(_db_path())
-    df = pd.read_sql_query(_HISTORY_SELECT, conn, params=(str(product_id),))
-    conn.close()
-    return df
-
-
-def get_product_detail(product_id):
-    """Return the latest row for a single product as a dict, or None."""
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        'SELECT * FROM price_history WHERE product_id = ? ORDER BY id DESC LIMIT 1',
-        (str(product_id),)
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def generate_pdf_from_db(output_path=None):
-    """Generate the PDF report from existing DB data without scraping."""
-    conn = sqlite3.connect(_db_path())
-    conn.row_factory = sqlite3.Row
-
-    # Get distinct product IDs
-    rows = conn.execute('''
-        SELECT p.product_id, p.product_name FROM price_history p
-        INNER JOIN (
-            SELECT product_id, MAX(id) as max_id
-            FROM price_history GROUP BY product_id
-        ) latest ON p.id = latest.max_id
-        ORDER BY p.product_name
-    ''').fetchall()
-
-    if not rows:
-        conn.close()
-        print("No data in database.")
-        return None
-
-    # Load all history in one connection
-    all_products_data = []
-    for row in rows:
-        pid = row['product_id']
-        name = _sanitize_for_pdf(row['product_name'])
-        df = pd.read_sql_query(_HISTORY_SELECT, conn, params=(str(pid),))
-        if df is not None and not df.empty:
-            all_products_data.append({
-                'name': name,
-                'latest': df.iloc[-1].to_dict(),
-                'history': df
-            })
-    conn.close()
-
-    if all_products_data:
-        create_combo_pdf_report(all_products_data, output_path=output_path)
-        return True
-    return None
-
-
-def _safe_num(val, default=0):
-    """Convert a value to float, returning default for bytes or unparseable data."""
-    if isinstance(val, bytes):
-        return default
-    try:
-        return float(val or default)
-    except (ValueError, TypeError):
-        return default
+    df_combined.to_csv(csv_file, index=False)
+    return df_combined
 
 
 def _compute_avg_recent_sale(recent_sales_json):
@@ -895,7 +606,7 @@ def _compute_avg_recent_sale(recent_sales_json):
         return None
 
 
-def create_combo_pdf_report(all_products_data, output_path=None):
+def create_combo_pdf_report(all_products_data):
     """Generate the combined PDF report."""
     if not all_products_data:
         print("No data collected.")
@@ -958,12 +669,12 @@ def create_combo_pdf_report(all_products_data, output_path=None):
 
         pdf.cell(18, 8, str(latest.get('Current Quantity', 'N/A')), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
-        qc = int(_safe_num(latest.get('Quantity Change', 0)))
+        qc = int(float(latest.get('Quantity Change', 0) or 0))
         pdf.set_text_color(34, 139, 34) if qc > 0 else (pdf.set_text_color(220, 20, 60) if qc < 0 else None)
         pdf.cell(14, 8, f"{'+' if qc > 0 else ''}{qc}", 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
         pdf.set_text_color(0, 0, 0)
 
-        ds = int(_safe_num(latest.get('Daily Sales', 0)))
+        ds = int(float(latest.get('Daily Sales', 0) or 0))
         pdf.cell(16, 8, str(ds), 1, align='R', new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         avg = _compute_avg_recent_sale(latest.get('Recent Sales', '[]'))
@@ -1051,7 +762,7 @@ def create_combo_pdf_report(all_products_data, output_path=None):
             ('Current Sellers', latest.get('Current Sellers', 'N/A')),
             ('Sold Yesterday', latest.get('Sold Yesterday', 'N/A')),
             ('Total Sold', latest.get('Total Sold', 'N/A')),
-            ('Daily Sales (calc)', int(_safe_num(latest.get('Daily Sales', 0)))),
+            ('Daily Sales (calc)', int(float(latest.get('Daily Sales', 0) or 0))),
         ]
 
         avg = _compute_avg_recent_sale(latest.get('Recent Sales', '[]'))
@@ -1130,470 +841,50 @@ def create_combo_pdf_report(all_products_data, output_path=None):
         pdf.image(chart_path, x=None, y=None, w=190)
         os.remove(chart_path)
 
-    out = output_path or DEFAULT_PDF_OUTPUT
-    pdf.output(out)
-    print(f"Report generated: {out}")
+    pdf.output("TCGplayer_Combo_Report.pdf")
+    print("Report generated: TCGplayer_Combo_Report.pdf")
 
 
-def check_chrome_installed():
-    """Check if Chrome is installed and print a helpful error if not."""
-    chrome_paths = {
-        'darwin': [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-        ],
-        'win32': [
-            os.path.expandvars(r'%ProgramFiles%\Google\Chrome\Application\chrome.exe'),
-            os.path.expandvars(r'%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe'),
-            os.path.expandvars(r'%LocalAppData%\Google\Chrome\Application\chrome.exe'),
-        ],
-        'linux': [
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/usr/bin/chromium-browser',
-            '/usr/bin/chromium',
-        ],
-    }
-    platform = 'darwin' if sys.platform == 'darwin' else 'win32' if sys.platform == 'win32' else 'linux'
-    paths = chrome_paths.get(platform, [])
-    if any(os.path.isfile(p) for p in paths) or shutil.which('google-chrome') or shutil.which('chromium'):
-        return True
-    print("ERROR: Google Chrome is required for scraping but was not found.")
-    print("Install Chrome from: https://www.google.com/chrome/")
-    print("On Linux, you can also use: sudo apt install chromium-browser")
-    return False
-
-
-def _create_proxy_auth_extension(proxy):
-    """Create a temporary Chrome extension for proxy authentication.
-    Returns the path to the extension directory."""
-    ext_dir = tempfile.mkdtemp(prefix='proxy_auth_')
-    manifest = {
-        "version": "1.0.0",
-        "manifest_version": 2,
-        "name": "Proxy Auth",
-        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage",
-                        "<all_urls>", "webRequest", "webRequestBlocking"],
-        "background": {"scripts": ["background.js"]},
-        "minimum_chrome_version": "22.0.0"
-    }
-    background_js = """
-    var config = {
-        mode: "fixed_servers",
-        rules: {
-            singleProxy: { scheme: "http", host: "%s", port: parseInt(%s) },
-            bypassList: ["localhost"]
-        }
-    };
-    chrome.proxy.settings.set({value: config, scope: "regular"}, function(){});
-    function callbackFn(details) {
-        return { authCredentials: { username: "%s", password: "%s" } };
-    }
-    chrome.webRequest.onAuthRequired.addListener(callbackFn,
-        {urls: ["<all_urls>"]}, ['blocking']);
-    """ % (proxy['host'], proxy['port'], proxy['user'], proxy['pass'])
-
-    with open(os.path.join(ext_dir, 'manifest.json'), 'w') as f:
-        json.dump(manifest, f)
-    with open(os.path.join(ext_dir, 'background.js'), 'w') as f:
-        f.write(background_js)
-    return ext_dir
-
-
-def _already_scraped_today(product_id):
-    """Check if a product has already been scraped today."""
-    today = datetime.now().strftime('%Y-%m-%d')
-    db_path = os.path.join(_BASE_DIR, DB_FILE)
-    conn = sqlite3.connect(db_path)
-    count = conn.execute(
-        'SELECT COUNT(*) FROM price_history WHERE product_id = ? AND date = ?',
-        (str(product_id), today)
-    ).fetchone()[0]
-    conn.close()
-    return count > 0
-
-
-def _find_chrome_binary():
-    """Find Chrome binary path, checking common install locations."""
-    import settings as app_settings
-    # Check settings for custom path first
-    custom_path = app_settings.load_settings().get('chrome_binary_path', '').strip()
-    if custom_path and os.path.isfile(custom_path):
-        return custom_path
-
-    if sys.platform == 'win32':
-        candidates = [
-            os.path.expandvars(r'%ProgramFiles%\Google\Chrome\Application\chrome.exe'),
-            os.path.expandvars(r'%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe'),
-            os.path.expandvars(r'%LocalAppData%\Google\Chrome\Application\chrome.exe'),
-            os.path.expandvars(r'%UserProfile%\AppData\Local\Google\Chrome\Application\chrome.exe'),
-            r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-            r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-        ]
-        for p in candidates:
-            if os.path.isfile(p):
-                return p
-        # Try where command
-        found = shutil.which('chrome') or shutil.which('google-chrome')
-        if found:
-            return found
-    elif sys.platform == 'darwin':
-        mac_path = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-        if os.path.isfile(mac_path):
-            return mac_path
-    else:
-        for name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
-            found = shutil.which(name)
-            if found:
-                return found
-    return None
-
-
-def create_driver(proxy=None, user_agent=None):
-    """Create and return a fresh Chrome driver with CDP network tracking.
-
-    proxy: optional dict with host, port, user, pass keys
-    user_agent: optional UA string override
-    """
+if __name__ == '__main__':
     options = webdriver.ChromeOptions()
-
-    # Set Chrome binary path if not in default location
-    chrome_path = _find_chrome_binary()
-    if chrome_path:
-        options.binary_location = chrome_path
-
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--log-level=3')
     options.add_experimental_option('excludeSwitches', ['enable-logging'])
-    ua = user_agent or DEFAULT_USER_AGENT
-    options.add_argument(f"user-agent={ua}")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
     options.add_argument('--window-size=1920,1080')
+
+    # Performance logging captures all XHR/fetch network activity — needed for sales API interception
     options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 
-    _proxy_ext_dir = None
-    if proxy:
-        if proxy.get('user') and proxy.get('pass'):
-            _proxy_ext_dir = _create_proxy_auth_extension(proxy)
-            options.add_argument(f'--load-extension={_proxy_ext_dir}')
-            # Can't use headless=new with extensions, use old headless
-            options.arguments = [a for a in options.arguments if a != '--headless=new']
-            options.add_argument('--headless')
-        else:
-            options.add_argument(f'--proxy-server=http://{proxy["host"]}:{proxy["port"]}')
-
     driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-    driver.set_page_load_timeout(60)
+
+    # Enable network tracking via CDP before any navigation
     driver.execute_cdp_cmd('Network.enable', {})
-    # Store ext dir ref for cleanup
-    driver._proxy_ext_dir = _proxy_ext_dir
-    return driver
-
-
-def _cleanup_driver(driver):
-    """Quit driver and clean up any proxy auth extension temp dir."""
-    ext_dir = getattr(driver, '_proxy_ext_dir', None)
-    driver.quit()
-    if ext_dir and os.path.isdir(ext_dir):
-        shutil.rmtree(ext_dir, ignore_errors=True)
-
-
-def scrape_with_retry(product_id, url, driver, retry_attempts=None):
-    """Attempt to scrape a product, retrying with backoff on failure."""
-    retries = retry_attempts if retry_attempts is not None else RETRY_ATTEMPTS
-    for attempt in range(1 + retries):
-        name, data = scrape_product_data(product_id, url, driver)
-        if data and name and name != "Unknown Product":
-            return name, data
-        if attempt < retries:
-            wait = RETRY_BACKOFF * (2 ** attempt)
-            print(f"  Retry {attempt + 1}/{retries} in {wait}s...")
-            time.sleep(wait)
-    return None, None
-
-
-def _scrape_sequential(products, settings, proxies, progress_callback=None, generate_pdf=True):
-    """Run scrape sequentially with a single driver. Returns (succeeded_count, failed_list)."""
-    total = len(products)
-    delay_range = tuple(settings.get('delay_between_requests', DELAY_BETWEEN_REQUESTS))
-    retry_attempts = settings.get('retry_attempts', RETRY_ATTEMPTS)
-    rotate_every = settings.get('session_rotate_every', SESSION_ROTATE_EVERY)
-    resume = settings.get('resume_enabled', False)
-    use_ua_rotation = settings.get('ua_rotation_enabled', False)
-    use_proxies = settings.get('proxies_enabled', False) and proxies
-
-    proxy_idx = 0
-    proxy = proxies[0] if use_proxies else None
-    ua = _random_ua() if use_ua_rotation else None
-    try:
-        driver = create_driver(proxy=proxy, user_agent=ua)
-    except Exception as e:
-        log_scrape(None, "error", f"Failed to create Chrome driver: {e}")
-        print(f"ERROR: Failed to create Chrome driver: {e}")
-        return 0, [str(entry) for entry in products]
 
     all_products_data = []
-    failed = []
 
     try:
-        for i, entry in enumerate(products, 1):
-            product_id, url = normalize_product(entry)
-            if product_id is None:
-                print(f"\n[{i}/{total}]  Could not parse product: {entry}")
-                log_scrape(None, "skipped", f"Could not parse: {entry}")
-                if progress_callback:
-                    progress_callback(i, total, f"Skipped: {entry}")
-                continue
+        for url in URLS:
+            print(f"\nScraping: {url}")
+            name, data = scrape_product_data(url, driver)
 
-            if resume and _already_scraped_today(product_id):
-                print(f"\n[{i}/{total}] Already scraped today, skipping: {product_id}")
-                log_scrape(product_id, "skipped", "Already scraped today")
-                if progress_callback:
-                    progress_callback(i, total, f"Skipped (already scraped): {product_id}")
-                continue
-
-            print(f"\n[{i}/{total}] Scraping: {url}")
-            if progress_callback:
-                progress_callback(i, total, f"Scraping {product_id}...")
-            name, data = scrape_with_retry(product_id, url, driver, retry_attempts=retry_attempts)
-
-            if data and name:
-                df = update_data(product_id, name, data)
+            if data and name and name != "Unknown Product":
+                df = update_data(name, data)
                 if df is not None and not df.empty:
                     all_products_data.append({
-                        'name': _sanitize_for_pdf(name),
+                        'name': name,
                         'latest': df.iloc[-1].to_dict(),
                         'history': df
                     })
-                log_scrape(product_id, "success", name)
-                if progress_callback:
-                    progress_callback(i, total, name)
             else:
-                print(f"  Failed: {url}")
-                log_scrape(product_id, "failed", f"No data returned for {url}")
-                failed.append(entry)
-                if progress_callback:
-                    progress_callback(i, total, f"Failed: {product_id}")
+                print(f"  ✗ Failed: {url}")
             print("-" * 40)
 
-            # Session rotation
-            if i % rotate_every == 0 and i < total:
-                print(f"\n--- Rotating Chrome session (after {i} products) ---")
-                _cleanup_driver(driver)
-                time.sleep(3)
-                if use_proxies:
-                    proxy_idx = (proxy_idx + 1) % len(proxies)
-                    proxy = proxies[proxy_idx]
-                ua = _random_ua() if use_ua_rotation else None
-                driver = create_driver(proxy=proxy, user_agent=ua)
-
-            # Delay between requests
-            if i < total:
-                delay = random.uniform(*delay_range)
-                time.sleep(delay)
-
-        if generate_pdf and all_products_data:
+        if all_products_data:
             create_combo_pdf_report(all_products_data)
 
-        print(f"\nDone: {len(all_products_data)} succeeded, {len(failed)} failed")
-        if failed:
-            print(f"Failed products: {failed}")
-
-        return len(all_products_data), failed
-
     finally:
-        _cleanup_driver(driver)
-
-
-def _scrape_worker(worker_id, chunk, proxy, settings, counter, lock, total, progress_callback):
-    """Worker function for parallel scraping. Scrapes a chunk of products with one driver."""
-    use_ua_rotation = settings.get('ua_rotation_enabled', False)
-    delay_range = tuple(settings.get('delay_between_requests', DELAY_BETWEEN_REQUESTS))
-    retry_attempts = settings.get('retry_attempts', RETRY_ATTEMPTS)
-    rotate_every = settings.get('session_rotate_every', SESSION_ROTATE_EVERY)
-    resume = settings.get('resume_enabled', False)
-
-    ua = _random_ua() if use_ua_rotation else None
-    try:
-        driver = create_driver(proxy=proxy, user_agent=ua)
-    except Exception as e:
-        log_scrape(None, "error", f"[W{worker_id}] Failed to create Chrome driver: {e}")
-        return [], [str(entry) for entry in chunk]
-
-    succeeded = []
-    failed = []
-
-    try:
-        for local_i, entry in enumerate(chunk, 1):
-            product_id, url = normalize_product(entry)
-            if product_id is None:
-                log_scrape(None, "skipped", f"[W{worker_id}] Could not parse: {entry}")
-                with lock:
-                    counter[0] += 1
-                    if progress_callback:
-                        progress_callback(counter[0], total, f"Skipped: {entry}")
-                continue
-
-            if resume and _already_scraped_today(product_id):
-                log_scrape(product_id, "skipped", f"[W{worker_id}] Already scraped today")
-                with lock:
-                    counter[0] += 1
-                    if progress_callback:
-                        progress_callback(counter[0], total, f"Skipped (already scraped): {product_id}")
-                continue
-
-            with lock:
-                if progress_callback:
-                    progress_callback(counter[0], total, f"[W{worker_id}] Scraping {product_id}...")
-
-            name, data = scrape_with_retry(product_id, url, driver, retry_attempts=retry_attempts)
-
-            if data and name:
-                update_data(product_id, name, data)
-                succeeded.append(entry)
-                log_scrape(product_id, "success", f"[W{worker_id}] {name}")
-                with lock:
-                    counter[0] += 1
-                    if progress_callback:
-                        progress_callback(counter[0], total, name)
-            else:
-                failed.append(entry)
-                log_scrape(product_id, "failed", f"[W{worker_id}] No data returned for {url}")
-                with lock:
-                    counter[0] += 1
-                    if progress_callback:
-                        progress_callback(counter[0], total, f"Failed: {product_id}")
-
-            # Session rotation within worker
-            if local_i % rotate_every == 0 and local_i < len(chunk):
-                _cleanup_driver(driver)
-                time.sleep(3)
-                ua = _random_ua() if use_ua_rotation else None
-                driver = create_driver(proxy=proxy, user_agent=ua)
-
-            if local_i < len(chunk):
-                delay = random.uniform(*delay_range)
-                time.sleep(delay)
-
-    finally:
-        _cleanup_driver(driver)
-
-    return succeeded, failed
-
-
-def _run_parallel_scrape(products, proxies, settings, progress_callback=None, generate_pdf=True):
-    """Run scrape in parallel with multiple Chrome instances. Returns (succeeded_count, failed_list)."""
-    max_workers = settings.get('parallel_max_workers', 3)
-    num_workers = min(max_workers, len(proxies), len(products))
-    if num_workers < 2:
-        return _scrape_sequential(products, settings, proxies, progress_callback, generate_pdf)
-
-    total = len(products)
-    print(f"Parallel scrape: {num_workers} workers, {total} products")
-
-    # Round-robin distribute products to workers
-    chunks = [[] for _ in range(num_workers)]
-    for i, product in enumerate(products):
-        chunks[i % num_workers].append(product)
-
-    # Assign proxies to workers (cycle if fewer proxies than workers)
-    worker_proxies = [proxies[i % len(proxies)] for i in range(num_workers)]
-
-    counter = [0]  # Mutable shared counter
-    lock = threading.Lock()
-
-    all_succeeded = []
-    all_failed = []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = []
-        for worker_id in range(num_workers):
-            f = executor.submit(
-                _scrape_worker, worker_id, chunks[worker_id],
-                worker_proxies[worker_id], settings, counter, lock,
-                total, progress_callback
-            )
-            futures.append(f)
-
-        for f in concurrent.futures.as_completed(futures):
-            succeeded, failed = f.result()
-            all_succeeded.extend(succeeded)
-            all_failed.extend(failed)
-
-    if generate_pdf:
-        # Regenerate PDF from DB since parallel workers stored data directly
-        all_data = get_all_latest_from_db()
-        if all_data:
-            pdf_data = []
-            for p in all_data:
-                history = get_product_history(p['product_id'])
-                if history is not None and not history.empty:
-                    pdf_data.append({
-                        'name': _sanitize_for_pdf(p['product_name']),
-                        'latest': history.iloc[-1].to_dict(),
-                        'history': history
-                    })
-            if pdf_data:
-                create_combo_pdf_report(pdf_data)
-
-    print(f"\nDone: {len(all_succeeded)} succeeded, {len(all_failed)} failed")
-    if all_failed:
-        print(f"Failed products: {all_failed}")
-
-    return len(all_succeeded), all_failed
-
-
-def run_scrape(progress_callback=None, generate_pdf=True):
-    """Run the full scrape pipeline. Returns (succeeded_count, failed_list).
-
-    progress_callback: optional callable(current, total, product_name) for live status updates.
-    generate_pdf: if True, generate the PDF report after scraping.
-    """
-    import settings as app_settings
-
-    init_db()
-    if not check_chrome_installed():
-        return 0, []
-    products = load_products()
-    total = len(products)
-    print(f"Loaded {total} products")
-    log_scrape(None, "start", f"Scrape started: {total} products")
-
-    if total == 0:
-        print("No products to scrape.")
-        log_scrape(None, "end", "No products to scrape")
-        return 0, []
-
-    s = app_settings.load_settings()
-    proxies = app_settings.load_proxies() if s.get('proxies_enabled') else []
-
-    # Use parallel if enabled and we have proxies
-    if s.get('parallel_enabled') and proxies and total > 1:
-        succeeded, failed = _run_parallel_scrape(products, proxies, s, progress_callback, generate_pdf)
-    else:
-        succeeded, failed = _scrape_sequential(products, s, proxies, progress_callback, generate_pdf)
-
-    log_scrape(None, "end", f"Scrape finished: {succeeded} succeeded, {len(failed)} failed")
-    return succeeded, failed
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='TCGplayer Price Tracker')
-    parser.add_argument('--serve', action='store_true', help='Start the web interface')
-    parser.add_argument('--port', type=int, default=5000, help='Port for the web interface (default: 5000)')
-    parser.add_argument('--pdf', action='store_true', help='Generate PDF from existing DB data without scraping')
-    args = parser.parse_args()
-
-    init_db()
-
-    if args.serve:
-        from web import create_app
-        app = create_app()
-        app.run(debug=True, port=args.port)
-    elif args.pdf:
-        result = generate_pdf_from_db()
-        if not result:
-            print("No data in database. Run a scrape first.")
-    else:
-        run_scrape()
+        driver.quit()

@@ -8,7 +8,7 @@ This Python tool tracks prices for sealed Pokemon (and other TCG) products on TC
 - **Product Catalog**: Built-in searchable catalog of 31,000+ Pokemon TCG products from tcgcsv.com. Search, add, and remove tracked products from the web UI.
 - **Automated Data Scraping**: Uses Selenium with Chrome in headless mode. Captures dynamically loaded content and intercepts internal TCGplayer API calls via Chrome DevTools Protocol (CDP).
 - **Recent Sales Data**: Captures the last 10 individual sale records (date, condition, price, qty) per product by intercepting TCGplayer's internal `mpapi.tcgplayer.com` sales endpoint.
-- **Active Listings**: Fetches the lowest 6 active listings per product via TCGplayer's search API (POST), filtered to English-only, standard listing type, and within a reasonable price range of market value.
+- **Active Listings**: Fetches the lowest 6 active listings per product via TCGplayer's search API (POST), filtered to English-only, standard listing type, and within a reasonable price range of market value — eliminating Korean/Portuguese variants, loose packs, opened shells, dice-only listings, and other irrelevant entries.
 - **SQLite Storage**: All price history stored in `tcgplayer.db` with indexed queries for fast lookups.
 - **Rate Limiting**: Configurable delays between requests, retry with exponential backoff, and automatic Chrome session rotation to avoid rate limits.
 - **Web UI** (`--serve`):
@@ -20,7 +20,8 @@ This Python tool tracks prices for sealed Pokemon (and other TCG) products on TC
   - **Refresh Catalog** to pull latest products from tcgcsv.com API.
 - **Combined PDF Report** (`TCGplayer_Combo_Report.pdf`):
   - Summary page with Market Price, day-over-day change, quantity, daily sales, average recent sale price, and lowest active ask — all color-coded.
-  - Detail pages per product with latest data, recent sales table, active listings table, and a price history chart.
+  - Detail pages per product with latest data, recent sales table, active listings table (with Direct/Verified seller status), and a price history chart.
+  - Charts showing Market Price, 7-day moving average, most recent sale, average of last 10 sales, daily sales volume, and active seller count.
 - **Automated Scheduling**: Runs via Windows Task Scheduler using the included `scrape.bat`.
 
 ## How It Works
@@ -33,7 +34,7 @@ TCGplayer does not expose sales history or active listings in a public API. This
 ## Quick Start
 
 ```bash
-git clone https://github.com/aaronentwistle/tcgplayerscraper.git
+git clone https://github.com/mandalatcg/tcgplayerscraper.git
 cd tcgplayerscraper
 cp products.txt.example products.txt
 uv sync
@@ -50,7 +51,7 @@ Then open http://127.0.0.1:5000 to browse the dashboard, search the product cata
 
 ### 2. Clone the Repository
 ```bash
-git clone https://github.com/aaronentwistle/tcgplayerscraper.git
+git clone https://github.com/mandalatcg/tcgplayerscraper.git
 cd tcgplayerscraper
 ```
 
