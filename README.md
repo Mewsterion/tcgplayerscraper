@@ -144,4 +144,4 @@ Completion timestamps are logged to `scraper_log.txt`.
 
 ## Credits
 
-Originally created by [Mewsterion](https://github.com/Mewsterion/tcgplayerscraper) and [dmeehan-I](https://github.com/dmeehan-I). This fork adds the web UI, product catalog, reactive dashboard, and uv support.
+Originally created by [Mewsterion](https://github.com/Mewsterion/tcgplayerscraper). This fork adds the web UI, product catalog, reactive dashboard, and uv support.
